@@ -1,0 +1,10 @@
+
+numpy<2.0
+scipy
+soundfile
+python-dotenv
+fastapi
+uvicorn[standard]
+pydantic<3
+pytest
+ruff

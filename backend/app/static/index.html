@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Multilingual Voice AI - Bidirectional Voice Call with Voice Cloning</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#00f2fe" stroke-width="2">
+        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        <line x1="12" y1="19" x2="12" y2="22"/>
+        <line x1="8" y1="22" x2="16" y2="22"/>
+      </svg>
+      <h1>Multilingual Voice AI - Bidirectional Call Translator</h1>
+    </div>
+    <div class="status-badge" id="connStatusBadge">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="connStatusText">System Ready (CPU INT8)</span>
+    </div>
+  </header>
+
+  <main class="main-container">
+    <!-- Call Setup Bar: Language Selectors -->
+    <section class="controls-bar" style="background: rgba(30, 41, 59, 0.7); border-color: rgba(99, 102, 241, 0.3);">
+      <div style="display: flex; gap: 1.5rem; flex-wrap: wrap; align-items: center; width: 100%;">
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <label style="font-size: 0.85rem; font-weight: 600; color: #94a3b8;">YOUR VOICE (SPEAKER A):</label>
+          <select id="selectLangA" style="background: #0f172a; color: #38bdf8; border: 1px solid #334155; padding: 0.4rem 0.8rem; border-radius: 6px; font-weight: 600;">
+            <option value="auto" selected>🎯 Auto-Detect My Language (LID)</option>
+            <option value="te">🇮🇳 Telugu (తెలుగు)</option>
+            <option value="ta">🇮🇳 Tamil (தமிழ்)</option>
+            <option value="hi">🇮🇳 Hindi (हिन्दी)</option>
+            <option value="kn">🇮🇳 Kannada (ಕನ್ನಡ)</option>
+            <option value="ml">🇮🇳 Malayalam (മലയാളം)</option>
+            <option value="en">🇬🇧 English</option>
+          </select>
+        </div>
+
+        <div style="color: #64748b; font-weight: 700;">➔ TRANSLATE TO ➔</div>
+
+        <div style="display: flex; align-items: center; gap: 0.5rem;">
+          <label style="font-size: 0.85rem; font-weight: 600; color: #94a3b8;">RECEIVER HEARS IN (SPEAKER B):</label>
+          <select id="selectLangB" style="background: #0f172a; color: #a855f7; border: 1px solid #334155; padding: 0.4rem 0.8rem; border-radius: 6px; font-weight: 600;">
+            <option value="ta" selected>🇮🇳 Tamil (தமிழ்)</option>
+            <option value="en">🇬🇧 English</option>
+            <option value="hi">🇮🇳 Hindi (हिन्दी)</option>
+            <option value="te">🇮🇳 Telugu (తెలుగు)</option>
+            <option value="kn">🇮🇳 Kannada (ಕನ್ನಡ)</option>
+            <option value="ml">🇮🇳 Malayalam (മലയാളം)</option>
+          </select>
+        </div>
+
+        <div style="margin-left: auto; font-size: 0.8rem; color: #94a3b8;">
+          ✨ Speak naturally in <strong>any language</strong> — AI auto-detects & translates to receiver's tongue!
+        </div>
+      </div>
+    </section>
+
+    <!-- Latency HUD -->
+    <section class="latency-hud">
+      <div class="metric-card">
+        <span class="metric-label">Silero VAD Window</span>
+        <span class="metric-val" id="hudVad">32 ms</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Acoustic LID & ASR</span>
+        <span class="metric-val" id="hudAsr">-- ms</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Contextual NMT</span>
+        <span class="metric-val" id="hudNmt">-- ms</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Cloned Voice TTS</span>
+        <span class="metric-val" id="hudTts">-- ms</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Total E2E Latency</span>
+        <span class="metric-val" id="hudTotal">-- ms</span>
+      </div>
+    </section>
+
+    <!-- Dual Speaker Call Grid -->
+    <section class="call-grid">
+      <!-- Caller A Card -->
+      <div class="speaker-card active-speaker" id="cardCallerA">
+        <div class="speaker-header">
+          <div class="speaker-title">
+            <h2 id="nameCallerA">Speaker A (You)</h2>
+            <span class="lang-tag" id="langTagA">🎯 Auto-Detect (LID)</span>
+          </div>
+          <span class="clone-badge" id="cloneBadgeA">🎙️ Cloned (+2Hz Male)</span>
+        </div>
+
+        <div class="vu-container">
+          <div class="vu-bar" id="vuBarA"></div>
+        </div>
+
+        <div class="subtitles-box" id="subsBoxA">
+          <div style="color: #64748b; font-size: 0.85rem; font-style: italic; text-align: center; margin-top: 2rem;">
+            🎧 Speaker A's audio feed: Anything Speaker B says will be translated into Telugu and played in Speaker B's cloned voice.
+          </div>
+        </div>
+      </div>
+
+      <!-- Caller B Card -->
+      <div class="speaker-card" id="cardCallerB">
+        <div class="speaker-header">
+          <div class="speaker-title">
+            <h2 id="nameCallerB">Speaker B</h2>
+            <span class="lang-tag" id="langTagB">🇬🇧 English</span>
+          </div>
+          <span class="clone-badge" id="cloneBadgeB">🎙️ Cloned (-3Hz Female)</span>
+        </div>
+
+        <div class="vu-container">
+          <div class="vu-bar" id="vuBarB"></div>
+        </div>
+
+        <div class="subtitles-box" id="subsBoxB">
+          <div style="color: #64748b; font-size: 0.85rem; font-style: italic; text-align: center; margin-top: 2rem;">
+            🎧 Speaker B's audio feed: Anything Speaker A says will be translated into English and played in Speaker A's cloned voice.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Dedicated Live Microphone Spoken Action Bar -->
+    <section class="controls-bar" style="background: rgba(16, 185, 129, 0.08); border: 1.5px solid rgba(16, 185, 129, 0.35); justify-content: center; gap: 1.5rem;">
+      <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; justify-content: center; width: 100%;">
+        <button class="btn btn-primary" id="btnRecordSpeakerA" style="background: #10b981; font-size: 0.95rem; padding: 0.75rem 1.5rem;" disabled>
+          🎙️ Speak as Speaker A (Click to Speak)
+        </button>
+
+        <button class="btn btn-purple" id="btnRecordSpeakerB" style="font-size: 0.95rem; padding: 0.75rem 1.5rem;" disabled>
+          🎙️ Speak as Speaker B (Click to Speak)
+        </button>
+
+        <span id="recordingStatus" style="font-size: 0.9rem; color: #94a3b8; font-weight: 500;">
+          💡 Click 'Start Live Call' first, then click either button to speak into your mic!
+        </span>
+      </div>
+    </section>
+
+    <!-- Controls Bar -->
+    <section class="controls-bar">
+      <div class="btn-group">
+        <button class="btn btn-primary" id="btnStartCall">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
+          </svg>
+          Start Live Call
+        </button>
+
+        <button class="btn btn-secondary" id="btnMuteMic" disabled>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="1" y1="1" x2="23" y2="23"/>
+            <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V5a3 3 0 0 0-5.94-.6"/>
+            <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/>
+            <line x1="12" y1="19" x2="12" y2="22"/>
+            <line x1="8" y1="22" x2="16" y2="22"/>
+          </svg>
+          Mute Mic
+        </button>
+
+        <button class="btn btn-purple" id="btnVoiceClone">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+          </svg>
+          Enroll Voice Clone
+        </button>
+
+        <button class="btn btn-secondary" id="btnSimulateTurn">
+          ⚡ Simulate Bidirectional Turn
+        </button>
+      </div>
+
+      <div class="btn-group">
+        <button class="btn btn-danger" id="btnEndCall" disabled>
+          End Call
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <!-- Ethical Consent Modal -->
+  <div class="modal-overlay" id="consentModal">
+    <div class="modal-card">
+      <h3>🎙️ Ethical Voice Cloning Consent</h3>
+      <p style="color: #94a3b8; font-size: 0.9rem;">
+        Antigravity enforces strict verbal consent. Your voice characteristics (pitch, tempo, timbre) will be extracted in RAM and used to synthesize translations for the other speaker. Destroyed when the call ends. Zero disk writes.
+      </p>
+
+      <div class="consent-box" id="consentPhraseBox">
+        "I authorize this AI system to clone and use my voice for real-time translation."
+      </div>
+
+      <div style="display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 1rem;">
+        <button class="btn btn-secondary" id="btnCancelConsent">Cancel</button>
+        <button class="btn btn-purple" id="btnGrantConsent">Verify & Authorize</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

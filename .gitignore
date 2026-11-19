@@ -1,0 +1,47 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Model Checkpoints & Large Pretrained Weights
+backend/pretrained_models/
+pretrained_models/
+*.ckpt
+*.pt
+*.bin
+*.onnx
+*.safetensors
+
+# Audio recordings & Test files
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+backend/microphone_test.wav
+
+# Logs
+logs/
+*.log
+
+# Environment Variables & Secrets
+.env
+.env.local
+.env.*.local
+
+# IDE & OS Specific
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
