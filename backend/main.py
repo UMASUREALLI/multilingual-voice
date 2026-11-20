@@ -28,7 +28,12 @@ logger = logging.getLogger("call_translator.main")
 
 app = FastAPI(
     title="Multilingual Voice AI Call Translator",
-    description="Real-Time Full-Duplex Bidirectional Voice Call Translation with Voice Cloning",
+    description=(
+        "### 🎙️ **[👉 CLICK HERE TO OPEN INTERACTIVE CALL DASHBOARD (/)](/)** 🎙️\n\n"
+        "Real-Time Full-Duplex Bidirectional Voice Call Translation with Voice Cloning.\n\n"
+        "*(Note: You are currently viewing the backend developer API documentation at `/docs`. "
+        "To experience the full interactive dashboard with live microphone speech, dual subtitles, and cloned voice playback, open **[http://localhost:8000/](/)**)*"
+    ),
     version="2.0.0"
 )
 

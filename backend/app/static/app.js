@@ -85,9 +85,21 @@ selectLangA.addEventListener("change", syncLanguageTags);
 selectLangB.addEventListener("change", syncLanguageTags);
 
 
+async function initAudioContext() {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioContext.state === "suspended") {
+    await audioContext.resume();
+  }
+}
+
 async function startCall() {
   try {
     syncLanguageTags();
+    // Warm up AudioContext immediately on user click
+    await initAudioContext();
+
     const langA = selectLangA.value;
     const langB = selectLangB.value;
 
@@ -162,15 +174,23 @@ function connectWebSocket(sid) {
 
 async function setupLocalMicrophone() {
   try {
-    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    await initAudioContext();
+    if (!mediaStream) {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+    }
     const source = audioContext.createMediaStreamSource(mediaStream);
 
     analyserNode = audioContext.createAnalyser();
     analyserNode.fftSize = 256;
     source.connect(analyserNode);
 
-    // Recorder processor node to capture 16kHz float32 audio
+    // Recorder processor node to capture audio chunks
     recorderNode = audioContext.createScriptProcessor(4096, 1, 1);
     recorderNode.onaudioprocess = (e) => {
       if (!isRecording) return;
@@ -178,10 +198,16 @@ async function setupLocalMicrophone() {
       recordedAudioChunks.push(new Float32Array(channelData));
     };
     source.connect(recorderNode);
-    recorderNode.connect(audioContext.destination);
+
+    // CRITICAL: Connect to zero-gain node so WebAudio remains active without blasting mic sound to speakers!
+    const zeroGain = audioContext.createGain();
+    zeroGain.gain.value = 0.0;
+    recorderNode.connect(zeroGain);
+    zeroGain.connect(audioContext.destination);
 
     // Drive local VU Meter
     const buffer = new Uint8Array(analyserNode.frequencyBinCount);
+    if (vuInterval) clearInterval(vuInterval);
     vuInterval = setInterval(() => {
       if (!isCalling || isMuted) {
         vuBarA.style.width = "0%";
@@ -201,16 +227,17 @@ async function setupLocalMicrophone() {
 
   } catch (err) {
     console.warn("Microphone access not available in browser:", err);
-    alert("Microphone permission required. Please allow microphone access in your browser.");
+    alert("Microphone permission required! Please click the lock or camera icon in your browser URL bar to allow microphone access, then try again.");
   }
 }
 
 
-function toggleRecording(speakerId) {
+async function toggleRecording(speakerId) {
   if (!isCalling || !sessionId) {
     alert("Please click 'Start Live Call' first.");
     return;
   }
+  await initAudioContext();
 
   const activeBtn = (speakerId === "caller_a") ? btnRecordSpeakerA : btnRecordSpeakerB;
   const otherBtn = (speakerId === "caller_a") ? btnRecordSpeakerB : btnRecordSpeakerA;
@@ -255,12 +282,12 @@ function toggleRecording(speakerId) {
       offset += chunk.length;
     }
 
-    // Determine true physical sample rate from wall-clock duration
-    const physicalRate = Math.round(totalLen / elapsedSec);
-    console.log(`Audio stats: ${totalLen} samples captured over ${elapsedSec.toFixed(2)}s -> Physical Rate = ${physicalRate}Hz`);
+    // Precise hardware sample rate from WebAudio context
+    const hwRate = (audioContext && audioContext.sampleRate) ? audioContext.sampleRate : 48000;
+    console.log(`Audio stats: ${totalLen} samples captured over ${elapsedSec.toFixed(2)}s @ ${hwRate}Hz`);
 
     // Downsample to 16,000 Hz if recorded at hardware 48kHz or 44.1kHz
-    const downsampled = downsampleTo16k(combined, physicalRate);
+    const downsampled = downsampleTo16k(combined, hwRate);
     console.log(`Resampled: ${combined.length} -> ${downsampled.length} samples @ 16000Hz (Duration: ${(downsampled.length / 16000).toFixed(2)}s)`);
 
     // Encode to 16kHz WAV Blob in memory
@@ -579,7 +606,7 @@ function playSyntheticAudio(base64Audio, speakerId) {
     snd.onended = () => {
       activeVu.style.width = "0%";
     };
-    snd.play();
+    snd.play().catch(e => console.warn("Audio autoplay blocked by browser policy:", e));
   } catch (e) {
     console.warn("Playback error:", e);
   }
