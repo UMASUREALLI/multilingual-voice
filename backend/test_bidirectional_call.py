@@ -32,24 +32,43 @@ from app.services.voice_cloner import VoiceCloningService
 from app.models.language import SUPPORTED_LANGUAGES, LanguageInfo, normalize_language_code
 
 
+_FALLBACK_INDEX = 0
+
 def generate_call_partner_reply(user_text: str, reply_lang: str = "en") -> str:
     """
     Intelligent conversational call partner response generator.
-    Replies contextually to greetings, questions, status checks, and chit-chat.
+    Replies contextually to greetings, typos, food/dinner queries, Telugu/Hindi/Tamil
+    phrases in native script or Romanized script (Tenglish/Hinglish), and chit-chat.
     """
+    global _FALLBACK_INDEX
     text_lower = user_text.lower().strip()
 
-    # 1. Greetings & "How are you"
-    if any(q in text_lower for q in ["how are you", "how r u", "how do you do", "బాగున్నారా", "ఎలా ఉన్నారు", "எப்படி இருக்கிறீர்கள்", "हालचाल"]):
+    # 1. Greetings & "How are you" (tolerates typos like 'how are ou', 'how r u', 'ela unnaru', etc.)
+    how_are_you_patterns = [
+        "how are you", "how are ou", "how r u", "how u", "hw r u", "how do you do",
+        "how are things", "whats up", "what's up", "wassup", "sup",
+        # Telugu (Native & Romanized)
+        "బాగున్నారా", "ఎలా ఉన్నారు", "ela unnaru", "ela unnav", "bagunnara", "bagunnava", "kusalama",
+        # Hindi
+        "हालचाल", "कैसे हो", "kaise ho", "kya haal",
+        # Tamil
+        "எப்படி இருக்கிறீர்கள்", "eppadi irukkeenga", "eppadi irukinga"
+    ]
+    if any(q in text_lower for q in how_are_you_patterns):
         replies = {
             "en": "Hey, I'm good! What about you?",
-            "te": "హలో, నేను బాగున్నాను! మీరు ఎలా ఉన్నారు?",
+            "te": "హలో, నేను చాలా బాగున్నాను! మీరు ఎలా ఉన్నారు?",
             "ta": "வணக்கம், நான் நன்றாக இருக்கிறேன்! நீங்கள் எப்படி இருக்கிறீர்கள்?",
             "hi": "नमस्ते, मैं बहुत अच्छा हूँ! आप कैसे हैं?"
         }
         return replies.get(reply_lang, replies["en"])
 
-    elif any(q in text_lower for q in ["hi", "hello", "hey", "నమస్కారం", "வணக்கம்", "नमस्ते"]):
+    # 2. General Greetings (hi, hello, namaste, namaskaram)
+    greeting_patterns = [
+        "hi", "hello", "hey", "good morning", "good evening", "good afternoon",
+        "నమస్కారం", "namaskaram", "namaste", "வணக்கம்", "vanakkam", "नमस्ते"
+    ]
+    if any(q in text_lower for q in greeting_patterns):
         replies = {
             "en": "Hello! Great to hear from you. How are you doing today?",
             "te": "నమస్కారం! మీతో మాట్లాడటం ఆనందంగా ఉంది. ఎలా ఉన్నారు?",
@@ -58,8 +77,34 @@ def generate_call_partner_reply(user_text: str, reply_lang: str = "en") -> str:
         }
         return replies.get(reply_lang, replies["en"])
 
-    # 2. Can you hear me / audio check
-    elif any(q in text_lower for q in ["can you hear me", "hear me", "speaking to you", "వినిపిస్తుందా", "కేట్கிறதா", "सुन पा रहे"]):
+    # 3. Meals, Dinner, Lunch, Food queries ("have your dinner", "had lunch", "tinnara", etc.)
+    food_patterns = [
+        "dinner", "lunch", "breakfast", "food", "eat", "eaten", "having food",
+        "have your dinner", "had your dinner", "have dinner", "had dinner",
+        # Telugu
+        "తిన్నారా", "భోజనం", "tinnara", "thinnara", "thinnava", "tinnava", "bhojanam", "tiffin",
+        # Hindi
+        "खाना", "khana", "khaya", "khaa liya",
+        # Tamil
+        "சாப்பிட்டீர்களா", "சாப்பாடு", "sappittacha", "sappadu"
+    ]
+    if any(q in text_lower for q in food_patterns):
+        replies = {
+            "en": "Yes, I had my food already! Thank you for asking. Did you have yours?",
+            "te": "అవును, నా భోజనం అయిపోయింది! అడిగినందుకు ధన్యవాదాలు. మీరు తిన్నారా?",
+            "ta": "ஆம், நான் சாப்பிட்டுவிட்டேன்! நீங்கள் சாப்பிட்டீர்களா?",
+            "hi": "हाँ, मैंने खाना खा लिया! पूछने के लिए शुक्रिया. क्या आपने खाया?"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 4. Can you hear me / audio check
+    hear_patterns = [
+        "can you hear me", "hear me", "speaking to you", "am i audible", "sound check",
+        "వినిపిస్తుందా", "vinipistunda", "vinipistundha",
+        "கேட்கிறதா", "ketkiratha", "kekutha",
+        "सुन पा रहे", "awaaz aa rahi", "sunai de raha"
+    ]
+    if any(q in text_lower for q in hear_patterns):
         replies = {
             "en": "Yes, I can hear you loud and clear! The voice translation is working seamlessly.",
             "te": "అవును, మీ మాటలు చాలా స్పష్టంగా వినిపిస్తున్నాయి! అనువాదం చాలా బాగా పనిచేస్తోంది.",
@@ -68,8 +113,14 @@ def generate_call_partner_reply(user_text: str, reply_lang: str = "en") -> str:
         }
         return replies.get(reply_lang, replies["en"])
 
-    # 3. What are you doing / Project queries
-    elif any(q in text_lower for q in ["what are you doing", "what project", "about project", "ఏం చేస్తున్నారు", "என்ன செய்கிறீர்கள்", "क्या कर रहे"]):
+    # 5. What are you doing / Work / Project queries
+    activity_patterns = [
+        "what are you doing", "what doing", "what project", "about project", "office", "work", "busy",
+        "ఏం చేస్తున్నారు", "em chestunnav", "em chestunnaru",
+        "என்ன செய்கிறீர்கள்", "enna panreenga",
+        "क्या कर रहे", "kya kar rahe ho"
+    ]
+    if any(q in text_lower for q in activity_patterns):
         replies = {
             "en": "I'm testing our real-time voice call translation system with you right now!",
             "te": "మనం ప్రస్తుతం రియల్ టైమ్ వాయిస్ కాల్ అనువాద వ్యవస్థను పరీక్షిస్తున్నాము!",
@@ -78,45 +129,103 @@ def generate_call_partner_reply(user_text: str, reply_lang: str = "en") -> str:
         }
         return replies.get(reply_lang, replies["en"])
 
-    # 4. What is your name / Who are you
-    elif any(q in text_lower for q in ["who are you", "your name", "మీ పేరు", "உங்கள் பெயர்", "आपका नाम"]):
+    # 6. Where are you / Location
+    location_patterns = [
+        "where are you", "where r u", "where do you live", "location",
+        "ఎక్కడ ఉన్నారు", "ekkada unnav", "ekkaduntaru",
+        "எங்கே இருக்கிறீர்கள்", "enga irukkeenga",
+        "कहाँ हो", "kahan ho"
+    ]
+    if any(q in text_lower for q in location_patterns):
         replies = {
-            "en": "I am your AI call partner, conversing with you across languages.",
-            "te": "నేను మీ AI కాల్ భాగస్వామిని, మీతో మాట్లాడటానికి ఇక్కడ ఉన్నాను.",
-            "ta": "நான் உங்கள் AI அழைப்பு கூட்டாளி, உங்களுடன் பேச வந்துள்ளேன்.",
-            "hi": "मैं आपका AI कॉल पार्टनर हूँ, आपसे रीयल-टाइम में बात कर रहा हूँ."
+            "en": "I'm right here with you on the call, ready to chat anytime!",
+            "te": "నేను ఇక్కడే మీతో కాల్‌లో ఉన్నాను, మీతో మాట్లాడటానికి సిద్ధంగా ఉన్నాను!",
+            "ta": "நான் இதோ உங்கள் அழைப்பில் உங்களுடன் பேச தயாராக இருக்கிறேன்!",
+            "hi": "मैं यहीं आपके साथ कॉल पर हूँ, आपसे बात करने के लिए हमेशा तैयार!"
         }
         return replies.get(reply_lang, replies["en"])
 
-    # 5. Good / Nice / Thank you
-    elif any(q in text_lower for q in ["thank", "thanks", "good", "great", "awesome", "ధన్యవాదాలు", "நன்றி", "धन्यवाद"]):
+    # 7. What is your name / Who are you
+    name_patterns = [
+        "who are you", "your name", "what is your name", "who r u",
+        "మీ పేరు", "evaru meeru", "mee peru enti",
+        "உங்கள் பெயர்", "unga peyer enna",
+        "आपका नाम", "aapka naam kya hai"
+    ]
+    if any(q in text_lower for q in name_patterns):
         replies = {
-            "en": "You're very welcome! It's really exciting to see this working so smoothly.",
-            "te": "చాలా సంతోషం! ఇది ఇంత అద్భుతంగా పనిచేయడం చాలా బాగుంది.",
-            "ta": "மிக்க மகிழ்ச்சி! இது மிகவும் அற்புதமாக செயல்படுகிறது.",
-            "hi": "बहुत-बहुत धन्यवाद! यह सब इतनी अच्छी तरह से काम कर रहा है, यह बहुत बढ़िया है."
+            "en": "I am Sarah, your AI call partner conversing with you across languages.",
+            "te": "నేను సారా, మీతో వివిధ భాషల్లో మాట్లాడే మీ AI కాల్ భాగస్వామిని.",
+            "ta": "நான் சாரா, உங்களுடன் பல மொழிகளில் பேசும் உங்கள் AI அழைப்பு கூட்டாளி.",
+            "hi": "मैं सारा हूँ, आपकी AI कॉल पार्टनर जो आपसे विभिन्न भाषाओं में बात करती हूँ."
         }
         return replies.get(reply_lang, replies["en"])
 
-    # 6. Goodbyes
-    elif any(q in text_lower for q in ["bye", "goodbye", "see you", "టాటా", "వెళ్ళొస్తాను", "போய் வருகிறேன்", "अलविदा"]):
+    # 8. Good / Nice / Thank you
+    praise_patterns = [
+        "thank", "thanks", "good", "great", "awesome", "nice", "super", "perfect",
+        "ధన్యవాదాలు", "dhanyavadalu", "chala bagundi",
+        "நன்றி", "nandri", "romba nalla irukku",
+        "धन्यवाद", "shukriya", "bahut achha"
+    ]
+    if any(q in text_lower for q in praise_patterns):
         replies = {
-            "en": "Goodbye! It was great speaking with you. Have a wonderful day ahead!",
+            "en": "You're very welcome! It's really exciting to see our speech translation working so smoothly.",
+            "te": "చాలా సంతోషం! మన వాయిస్ ట్రాన్స్‌లేషన్ ఇంత అద్భుతంగా పనిచేయడం చాలా బాగుంది.",
+            "ta": "மிக்க மகிழ்ச்சி! நமது குரல் மொழிபெயர்ப்பு மிகவும் அற்புதமாக செயல்படுகிறது.",
+            "hi": "बहुत-बहुत धन्यवाद! हमारा वॉइस ट्रांसलेशन इतनी अच्छी तरह काम कर रहा है, यह बहुत बढ़िया है."
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 9. Goodbyes
+    bye_patterns = [
+        "bye", "goodbye", "see you", "talk to you later", "good night", "tata",
+        "టాటా", "వెళ్ళొస్తాను", "vellostanu",
+        "போய் வருகிறேன்", "poyitu varen",
+        "अलविदा", "shubh ratri", "phir milenge"
+    ]
+    if any(q in text_lower for q in bye_patterns):
+        replies = {
+            "en": "Goodbye! It was wonderful speaking with you. Have a great day ahead!",
             "te": "సరే ఉంటాను! మీతో మాట్లాడటం చాలా ఆనందంగా ఉంది. మంచి రోజు కావాలని కోరుకుంటున్నాను!",
             "ta": "போய் வருகிறேன்! உங்களுடன் பேசியதில் மகிழ்ச்சி. நல்ல நாளாக அமையட்டும்!",
             "hi": "अलविदा! आपसे बात करके बहुत ख़ुशी हुई. आपका दिन शुभ हो!"
         }
         return replies.get(reply_lang, replies["en"])
 
-    # 7. General conversational reply
-    else:
-        replies = {
-            "en": "That sounds great! I completely agree with you.",
-            "te": "అవును, అది నిజమే! నేను మీతో పూర్తిగా ఏకీభవిస్తున్నాను.",
-            "ta": "நிச்சயமாக, அது புரிகிறது! நான் உங்களுடன் உடன்படுகிறேன்.",
-            "hi": "बिल्कुल सही! मैं आपकी बात से पूरी तरह सहमत हूँ."
-        }
-        return replies.get(reply_lang, replies["en"])
+    # 10. Natural Dynamic Fallback (cycles through varied realistic replies)
+    fallback_pool = {
+        "en": [
+            "That's really interesting! Tell me more about that.",
+            "Got it! How is everything else going with you today?",
+            "That sounds great! I completely agree with you.",
+            "I hear you! It's really wonderful chatting with you like this.",
+            "Nice! What else is on your mind?"
+        ],
+        "te": [
+            "చాలా ఆసక్తికరంగా ఉంది! దీని గురించి మరికొంత చెప్పండి.",
+            "అర్థమైంది! ఈ రోజు మీ పనులన్నీ ఎలా సాగుతున్నాయి?",
+            "అవును, అది నిజమే! నేను మీతో పూర్తిగా ఏకీభవిస్తున్నాను.",
+            "మీతో ఇలా మాట్లాడటం చాలా సంతోషంగా ఉంది.",
+            "బాగుంది! ఇంకా ఏమైనా విశేషాలు ఉన్నాయా?"
+        ],
+        "ta": [
+            "மிகவும் சுவாரஸ்யமாக இருக்கிறது! இதைப் பற்றி மேலும் சொல்லுங்கள்.",
+            "புரிந்தது! இன்று மற்ற வேலைகள் எப்படி போகின்றன?",
+            "நிச்சயமாக, அது புரிகிறது! நான் உங்களுடன் உடன்படுகிறேன்.",
+            "உங்களுடன் இப்படி பேசுவது மகிழ்ச்சியாக இருக்கிறது."
+        ],
+        "hi": [
+            "यह बहुत दिलचस्प है! इसके बारे में और बताइए.",
+            "समझ गया! आज का बाकी दिन आपका कैसा चल रहा है?",
+            "बिल्कुल सही! मैं आपकी बात से पूरी तरह सहमत हूँ.",
+            "आपसे इस तरह बात करके बहुत अच्छा लग रहा है."
+        ]
+    }
+    lang_pool = fallback_pool.get(reply_lang, fallback_pool["en"])
+    reply = lang_pool[_FALLBACK_INDEX % len(lang_pool)]
+    _FALLBACK_INDEX += 1
+    return reply
 
 
 def print_banner(a_name, a_lang, b_name, b_lang, input_device_name, output_device_name):
