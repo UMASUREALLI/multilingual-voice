@@ -101,6 +101,7 @@ class LiveAudioStreamer:
         If a headset or earbuds (e.g., realme Buds, AirPods, Bluetooth Headset)
         is the active output, automatically pairs with that headset's input mic
         instead of defaulting to the distant laptop mic.
+        Filters for standard MME / DirectSound host APIs (ignores raw WDM-KS).
         """
         try:
             device_list = sd.query_devices()
@@ -111,9 +112,10 @@ class LiveAudioStreamer:
                 for kw in keywords:
                     if kw in out_name:
                         for idx, dev in enumerate(device_list):
-                            if dev.get("max_input_channels", 0) > 0:
+                            # Restrict to standard Windows MME (0) or DirectSound (1) APIs
+                            if dev.get("max_input_channels", 0) > 0 and dev.get("hostapi") in (0, 1):
                                 in_name = dev.get("name", "").lower()
-                                if kw in in_name:
+                                if kw in in_name and not in_name.startswith("@"):
                                     return idx
         except Exception:
             pass
