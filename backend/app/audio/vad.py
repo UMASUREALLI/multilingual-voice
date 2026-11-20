@@ -4,6 +4,7 @@ Integrates quantized Silero VAD v6 with stateful recurrent streaming,
 hangover timing, and rolling pre-roll buffer to prevent audio clipping.
 """
 
+import logging
 import os
 import time
 from enum import Enum
@@ -12,6 +13,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from app.audio.buffer import RollingPreRollBuffer
+
+logger = logging.getLogger(__name__)
 
 
 class SpeechEventType(str, Enum):
@@ -94,11 +97,15 @@ class StreamingSileroVAD:
         self._session = self._init_onnx_session(model_path)
 
     def _init_onnx_session(self, model_path: Optional[str]):
-        import onnxruntime
-        if model_path is None or not os.path.exists(model_path):
-            import faster_whisper.vad as f_vad
-            assets_path = f_vad.get_assets_path()
-            model_path = os.path.join(assets_path, "silero_vad_v6.onnx")
+        try:
+            import onnxruntime
+            if model_path is None or not os.path.exists(model_path):
+                import faster_whisper.vad as f_vad
+                assets_path = f_vad.get_assets_path()
+                model_path = os.path.join(assets_path, "silero_vad_v6.onnx")
+        except ImportError as exc:
+            logger.warning("Silero VAD dependencies unavailable (%s); using energy VAD.", exc)
+            return None
 
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Silero VAD model not found at: {model_path}")
@@ -134,9 +141,13 @@ class StreamingSileroVAD:
         x = np.concatenate([self._context, flat_frame]).reshape(1, self.FRAME_SIZE + self.CONTEXT_SIZE)
         self._context = flat_frame[-self.CONTEXT_SIZE:].copy()
 
-        # Run ONNX inference
-        out, self._h, self._c = self._session.run(None, {"input": x, "h": self._h, "c": self._c})
-        prob = float(out[0])
+        # Run neural inference when available, otherwise use a deterministic energy gate.
+        if self._session is not None:
+            out, self._h, self._c = self._session.run(None, {"input": x, "h": self._h, "c": self._c})
+            prob = float(out[0])
+        else:
+            rms_dbfs = calculate_rms_dbfs(flat_frame)
+            prob = float(np.clip((rms_dbfs + 55.0) / 35.0, 0.0, 1.0))
         frame_ms = (self.FRAME_SIZE / self.SAMPLE_RATE) * 1000.0
 
         event = SpeechEventType.SILENCE

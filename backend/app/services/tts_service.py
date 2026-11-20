@@ -9,13 +9,17 @@ import io
 import time
 import asyncio
 import logging
-from typing import Optional, Dict, List, Tuple, AsyncIterator
+from typing import Optional, Dict, Tuple, AsyncIterator
 from collections import OrderedDict
 import concurrent.futures
 
 import numpy as np
 import soundfile as sf
-import edge_tts
+
+try:
+    import edge_tts
+except ImportError:  # The deterministic fallback keeps the API usable offline.
+    edge_tts = None
 
 from app.models.tts import VoiceProfile, SpeechSynthesisRequest, SpeechSynthesisResult
 
@@ -140,6 +144,8 @@ class StreamingTtsService:
         Enables ultra-low Time-To-First-Audio (TTFA) by streaming chunks as they are generated.
         Zero disk writes.
         """
+        if edge_tts is None:
+            raise RuntimeError("edge-tts is not installed; streaming neural TTS is unavailable")
         voice = request.voice_id or self.get_voice(request.language_code, request.gender).voice_id
         communicate = edge_tts.Communicate(
             text=request.text,
@@ -175,6 +181,9 @@ class StreamingTtsService:
 
         start_time = time.perf_counter()
         voice_id = request.voice_id or self.get_voice(request.language_code, request.gender).voice_id
+
+        if edge_tts is None:
+            return self._synthesize_fallback(request, cache_key, voice_id, start_time)
 
         communicate = edge_tts.Communicate(
             text=request.text,
@@ -223,6 +232,49 @@ class StreamingTtsService:
 
         return result
 
+    def _synthesize_fallback(
+        self,
+        request: SpeechSynthesisRequest,
+        cache_key: Tuple[str, str, str, str, str],
+        voice_id: str,
+        start_time: float,
+    ) -> SpeechSynthesisResult:
+        """Create a short, deterministic audio cue when cloud TTS is unavailable.
+
+        This is deliberately not presented as cloned or neural speech. It preserves the
+        in-memory audio contract so the API and UI degrade cleanly while offline.
+        """
+        sample_rate = 24000
+        duration_sec = max(0.65, min(8.0, 0.35 + len(request.text.strip()) / 13.0))
+        sample_count = max(1, int(sample_rate * duration_sec))
+        timeline = np.arange(sample_count, dtype=np.float32) / sample_rate
+        base_frequency = 175.0 if request.gender.lower() == "female" else 120.0
+        # A gentle two-harmonic cue is more useful than returning silence to clients.
+        audio = (
+            0.10 * np.sin(2.0 * np.pi * base_frequency * timeline)
+            + 0.035 * np.sin(2.0 * np.pi * base_frequency * 2.0 * timeline)
+        ).astype(np.float32)
+        fade_samples = min(int(sample_rate * 0.04), sample_count // 2)
+        if fade_samples:
+            fade = np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+            audio[:fade_samples] *= fade
+            audio[-fade_samples:] *= fade[::-1]
+
+        result = SpeechSynthesisResult(
+            audio=audio,
+            sample_rate=sample_rate,
+            duration_sec=duration_sec,
+            latency_ms=(time.perf_counter() - start_time) * 1000.0,
+            voice_id=voice_id,
+            language_code=request.language_code,
+            num_chunks=1,
+        )
+        if len(self._cache) >= self.cache_size:
+            self._cache.popitem(last=False)
+        self._cache[cache_key] = result
+        logger.warning("Neural TTS unavailable; generated an offline audio cue for '%s'.", voice_id)
+        return result
+
     def synthesize(
         self,
         text: str,
@@ -253,9 +305,14 @@ class StreamingTtsService:
         except RuntimeError:
             loop = None
 
-        if loop and loop.is_running():
-            # Already inside an event loop (e.g. FastAPI / asyncio thread)
-            future = self._thread_pool.submit(asyncio.run, self.synthesize_async(req))
-            return future.result()
-        else:
+        try:
+            if loop and loop.is_running():
+                # Already inside an event loop (e.g. FastAPI / asyncio thread)
+                future = self._thread_pool.submit(asyncio.run, self.synthesize_async(req))
+                return future.result()
             return asyncio.run(self.synthesize_async(req))
+        except Exception as exc:
+            logger.warning("Neural TTS failed (%s); using the offline audio cue.", exc)
+            cache_key = (req.text.strip(), req.language_code, req.gender, req.rate, req.pitch)
+            voice = req.voice_id or self.get_voice(req.language_code, req.gender).voice_id
+            return self._synthesize_fallback(req, cache_key, voice, time.perf_counter())

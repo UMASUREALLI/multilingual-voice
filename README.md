@@ -1,6 +1,6 @@
 # Real-Time Bidirectional Multilingual Voice Call Translator
 
-> **An ultra-low-latency, full-duplex AI voice translator with voice cloning, acoustic echo loop suppression, and zero disk writes.**
+> **A full-duplex AI voice translator with consent-based prosody matching, acoustic echo suppression, and zero audio-file persistence.**
 
 ---
 
@@ -12,7 +12,7 @@
 4. **Contextual Translation with Named Entity Preservation**: Protects phone numbers, emails, addresses, currencies, and names from translation distortion.
 5. **Natural Neural Text-to-Speech (TTS)**: Ultra-low latency streaming synthesis with regional voice personas (e.g., `te-IN-ShrutiNeural`, `ta-IN-PallaviNeural`, `hi-IN-SwaraNeural`, `en-IN-NeerjaNeural`).
 6. **Acoustic Echo Feedback Loop Prevention**: Dynamically mutes the microphone input during speaker playback so synthesized speech never re-translates itself.
-7. **Ethical Voice Cloning & Prosody Matching**: Pitch (F0) tracking and tempo adaptation, governed by strict biometric consent statements and ephemeral session cleanup.
+7. **Consent-Based Voice Profiles & Prosody Matching**: Pitch (F0) and tempo adaptation are held only for the active call and wiped at termination. This adapts a neural voice's prosody; it does not reproduce a speaker's biometric timbre.
 
 ---
 
@@ -55,16 +55,27 @@ pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 ```
 
+For API/UI development and automated tests without downloading optional speech
+models, install the lightweight dependency set instead:
+
+```powershell
+pip install -r req.txt
+```
+
+The server loads local Whisper/Silero models lazily on the first audio request.
+When optional neural dependencies or cloud TTS are unavailable, the API remains
+usable and returns an offline audio cue rather than failing at startup.
+
 ---
 
 ## 🧪 Running Automated Tests
 
-Verify that all 56 end-to-end tests pass on your machine:
+Run the complete automated suite from the repository root:
 ```powershell
-cd backend
-python -m unittest discover -s tests -p "test_*.py"
+python -m pytest
 ```
-*(All 56 tests should complete with `OK` in ~20-30 seconds).*
+
+Four real-audio checks are skipped when their optional WAV fixtures are not present.
 
 ---
 
@@ -130,7 +141,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - **🌐 Visual Web Dashboard**: Open [http://localhost:8000/](http://localhost:8000/) in your browser
   - 🎯 **Auto-Detect Language (LID)**: Speak in any tongue—the model auto-identifies it.
   - ⚡ **1-Click Simulation**: Click *"Simulate Bidirectional Turn"* to test without a microphone.
-  - 🎙️ **Live Mic Translation**: Click *"Speak as Speaker A"* or *"Speaker B"*, speak naturally, and hear the translation in the partner's cloned voice!
+  - 🎙️ **Live Mic Translation**: Click *"Speak as Speaker A"* or *"Speaker B"*, speak naturally, and hear the translation with the selected neural voice profile.
 - **📖 Developer OpenAPI Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ---
@@ -143,10 +154,9 @@ multilingual-voice/
 │   ├── app/
 │   │   ├── audio/              # Live capture, VAD, playback & echo suppression
 │   │   ├── models/             # Pydantic schemas (call, language, audio, tts)
-│   │   ├── services/           # LID, ASR, NMT, TTS, Voice Cloning, LLM Dialogue
+│   │   ├── services/           # LID, ASR, NMT, TTS, voice profiles, LLM dialogue
 │   │   │   └── llm_dialogue.py # Dynamic neural SLM (Qwen2.5) + Gemini fallback
 │   │   ├── static/             # Interactive Call Dashboard (HTML5, WebAudio, CSS3)
-│   │   └── api/                # FastAPI routes & WebSocket coordinators
 │   ├── tests/                  # 56 automated unit and integration tests
 │   ├── test_bidirectional_call.py # Bidirectional full-duplex AI voice call CLI
 │   ├── test_live_call.py       # Full-duplex live call translation CLI
@@ -163,5 +173,5 @@ multilingual-voice/
 
 ## 🔒 Security & Privacy
 - **Zero Disk Persistence**: Raw audio streams are never saved to disk.
-- **Biometric Voice Privacy**: Voice embeddings exist solely in ephemeral memory and are immediately wiped upon call termination.
+- **Voice Profile Privacy**: Acoustic pitch/rate features exist only in memory and are removed when their call terminates.
 - **Acoustic Feedback Safety**: Active muting prevents acoustic echo loops during loudspeaker playback.

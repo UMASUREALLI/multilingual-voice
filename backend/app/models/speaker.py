@@ -7,7 +7,6 @@ from enum import Enum
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, field
 import time
-import numpy as np
 
 
 class ConsentStatus(str, Enum):

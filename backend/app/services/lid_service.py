@@ -110,7 +110,12 @@ class LanguageDetectionEngine:
     def _get_model(self):
         """Lazy load or reuse shared Whisper model instance (fallback)."""
         if self._model is None:
-            from faster_whisper import WhisperModel
+            try:
+                from faster_whisper import WhisperModel
+            except ImportError as exc:
+                raise RuntimeError(
+                    "faster-whisper is not installed; acoustic LID fallback is unavailable"
+                ) from exc
             logger.info(f"Loading faster-whisper '{self.model_size}' model (INT8 CPU)...")
             self._model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
         return self._model
@@ -205,8 +210,8 @@ class LanguageDetectionEngine:
                 logger.warning(f"ECAPA LID inference failed ({e}); falling back to Whisper LID.")
 
         # 3. Fallback: Faster-Whisper Acoustic Logits
-        model = self._get_model()
         try:
+            model = self._get_model()
             # Detect language on actual speech (up to 30s)
             lang_code, confidence, all_probs = model.detect_language(
                 speech_audio[: min(len(speech_audio), sample_rate * 30)]

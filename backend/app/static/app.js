@@ -11,8 +11,10 @@ let isMuted = false;
 let vuInterval = null;
 
 let isRecording = false;
+let isConsentRecording = false;
 let activeRecordingSpeaker = null;
 let recordedAudioChunks = [];
+let consentAudioChunks = [];
 let recordingStartTime = 0;
 
 // DOM Elements
@@ -121,6 +123,7 @@ async function startCall() {
     });
 
     const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.message || "Unable to create the call");
     sessionId = data.session_id;
 
     // Connect WebSocket
@@ -193,8 +196,12 @@ async function setupLocalMicrophone() {
     // Recorder processor node to capture audio chunks
     recorderNode = audioContext.createScriptProcessor(4096, 1, 1);
     recorderNode.onaudioprocess = (e) => {
-      if (!isRecording) return;
       const channelData = e.inputBuffer.getChannelData(0);
+      if (isConsentRecording) {
+        consentAudioChunks.push(new Float32Array(channelData));
+        return;
+      }
+      if (!isRecording) return;
       recordedAudioChunks.push(new Float32Array(channelData));
     };
     source.connect(recorderNode);
@@ -264,7 +271,7 @@ async function toggleRecording(speakerId) {
     activeBtn.innerHTML = (speakerId === "caller_a") ? "🎙️ Speak as Speaker A (Click to Speak)" : "🎙️ Speak as Speaker B (Click to Speak)";
     otherBtn.disabled = false;
 
-    recordingStatus.innerText = "⏳ Processing speech (VAD -> Acoustic LID -> Whisper ASR -> NMT -> Neural Voice Clone)...";
+    recordingStatus.innerText = "⏳ Processing speech (VAD -> Acoustic LID -> Whisper ASR -> NMT -> Neural Voice)...";
 
     // Flatten audio chunks
     let totalLen = 0;
@@ -309,6 +316,7 @@ async function toggleRecording(speakerId) {
         });
 
         const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || data.message || "Unable to process audio");
         if (data.status === "success" && data.subtitle) {
           appendSubtitle(data.subtitle);
           updateLatencyHud(data.subtitle);
@@ -337,7 +345,7 @@ async function toggleRecording(speakerId) {
           if (data.audio_base64) {
             playSyntheticAudio(data.audio_base64, activeRecordingSpeaker);
           }
-          recordingStatus.innerText = `✅ Processed turn! Target party heard translation in cloned voice.`;
+          recordingStatus.innerText = `✅ Processed turn! The translated audio is ready for the target party.`;
         } else {
           recordingStatus.innerText = `⚠️ ${data.message || "No words detected. Please speak louder."}`;
         }
@@ -432,9 +440,12 @@ async function endCall() {
   if (mediaStream) {
     mediaStream.getTracks().forEach(t => t.stop());
   }
+  if (recorderNode) recorderNode.disconnect();
+  if (audioContext && audioContext.state !== "closed") await audioContext.close();
 
   isCalling = false;
   isRecording = false;
+  isConsentRecording = false;
   btnStartCall.disabled = false;
   btnEndCall.disabled = true;
   btnMuteMic.disabled = true;
@@ -444,10 +455,18 @@ async function endCall() {
   selectLangB.disabled = false;
   vuBarA.style.width = "0%";
   vuBarB.style.width = "0%";
+  cloneBadgeA.innerText = "🔊 Standard neural voice";
+  cloneBadgeB.innerText = "🔊 Standard neural voice";
 
   connStatusText.innerText = "Call Ended (Memory Wiped)";
   connStatusBadge.style.color = "#94a3b8";
   recordingStatus.innerText = "Call ended. Voice profiles cleared from RAM.";
+  sessionId = null;
+  ws = null;
+  mediaStream = null;
+  recorderNode = null;
+  audioContext = null;
+  vuInterval = null;
 }
 
 
@@ -459,16 +478,43 @@ async function grantConsent() {
   }
 
   try {
+    if (!audioContext || !mediaStream) {
+      throw new Error("Microphone access is required to enroll a voice sample.");
+    }
+
+    consentAudioChunks = [];
+    isConsentRecording = true;
+    btnGrantConsent.disabled = true;
+    btnGrantConsent.innerText = "🔴 Recording… speak the consent phrase";
+    await new Promise(resolve => setTimeout(resolve, 3500));
+    isConsentRecording = false;
+
+    const totalLength = consentAudioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    if (totalLength < 1000) {
+      throw new Error("No usable microphone audio was captured.");
+    }
+    const combined = new Float32Array(totalLength);
+    let writeOffset = 0;
+    for (const chunk of consentAudioChunks) {
+      combined.set(chunk, writeOffset);
+      writeOffset += chunk.length;
+    }
+    const consentAudio = downsampleTo16k(combined, audioContext.sampleRate || 48000);
+    const consentBlob = encodeWAV(consentAudio, 16000);
+    const consentBase64 = await blobToBase64(consentBlob);
+
     const res = await fetch(`/api/call/${sessionId}/consent`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         speaker_id: "caller_a",
-        consent_text: "I authorize this AI system to clone and use my voice for real-time translation."
+        consent_text: "I authorize this AI system to clone and use my voice for real-time translation.",
+        audio_base64: consentBase64
       })
     });
 
     const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.message || "Voice enrollment failed");
     if (data.status === "success") {
       cloneBadgeA.style.display = "inline-flex";
       cloneBadgeA.innerText = `🎙️ Cloned (${data.pitch_adjustment} ${data.estimated_gender})`;
@@ -479,7 +525,21 @@ async function grantConsent() {
     }
   } catch (e) {
     alert("Error granting consent: " + e.message);
+  } finally {
+    isConsentRecording = false;
+    btnGrantConsent.disabled = false;
+    btnGrantConsent.innerText = "Record Sample & Authorize";
   }
+}
+
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = () => reject(new Error("Unable to read the recorded audio"));
+    reader.readAsDataURL(blob);
+  });
 }
 
 
@@ -535,6 +595,7 @@ async function simulateTurn() {
     });
 
     const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.message || "Unable to simulate the turn");
     if (data.subtitle) {
       appendSubtitle(data.subtitle);
       updateLatencyHud(data.subtitle);
@@ -555,6 +616,7 @@ function handleWsMessage(msg) {
   if (msg.type === "subtitle") {
     appendSubtitle(msg.data);
     updateLatencyHud(msg.data);
+    if (msg.audio_base64) playSyntheticAudio(msg.audio_base64, msg.data.speaker_id);
   } else if (msg.type === "audio_playback") {
     playSyntheticAudio(msg.audio_base64, "caller_b");
   }
@@ -565,7 +627,11 @@ function appendSubtitle(sub) {
   const isA = (sub.speaker_id === "caller_a");
   const senderBox = isA ? subsBoxA : subsBoxB;
   const receiverBox = isA ? subsBoxB : subsBoxA;
-  const cloneVoiceUsed = isA ? "Speaker A's Cloned Voice" : "Speaker B's Cloned Voice";
+  const cloneVoiceUsed = isA && cloneBadgeA.innerText.includes("Cloned")
+    ? "Speaker A's enrolled voice profile"
+    : (!isA && cloneBadgeB.innerText.includes("Cloned")
+      ? "Speaker B's enrolled voice profile"
+      : "a standard neural voice");
 
   // 1. Sender Card: Show what the sender spoke
   const senderItem = document.createElement("div");

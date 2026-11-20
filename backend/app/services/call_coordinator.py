@@ -9,18 +9,18 @@ Zero disk writes: all audio processing happens strictly in memory.
 import time
 import uuid
 import logging
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, Tuple, Any
 import numpy as np
 
 from app.models.call import CallSession, CallParticipant, CallSubtitle, CallStatus
+from app.models.language import SUPPORTED_LANGUAGES, normalize_language_code
 from app.models.tts import SpeechSynthesisResult
-from app.models.speaker import ConsentStatus
 from app.services.lid_service import LanguageDetectionEngine
-from app.services.asr_service import StreamingAsrService
+from app.services.asr_service import LazyWhisperModel, StreamingAsrService
 from app.services.translation_service import TranslationService
 from app.services.tts_service import StreamingTtsService
 from app.services.voice_cloner import VoiceCloningService
-from app.audio.player import AudioPlaybackEngine, link_playback_to_streamer
+from app.audio.player import AudioPlaybackEngine
 
 logger = logging.getLogger("call_translator.coordinator")
 
@@ -46,14 +46,17 @@ class CallCoordinator:
     ):
         self.model_size = model_size
 
-        # Singleton or shared Whisper model to strictly limit memory to <1GB RAM
+        # A shared lazy proxy keeps startup fast and limits model memory to one copy.
         if lid_engine is not None and asr_service is not None:
             self.lid = lid_engine
             self.asr = asr_service
         else:
-            from faster_whisper import WhisperModel
-            logger.info(f"Loading shared faster-whisper '{model_size}' model for call coordinator (INT8 CPU)...")
-            shared_model = WhisperModel(model_size, device="cpu", compute_type="int8", cpu_threads=4)
+            shared_model = LazyWhisperModel(
+                model_size=model_size,
+                device="cpu",
+                compute_type="int8",
+                cpu_threads=4,
+            )
             self.lid = LanguageDetectionEngine(whisper_model=shared_model, model_size=model_size)
             self.asr = StreamingAsrService(model_size=model_size, shared_model=shared_model)
 
@@ -86,6 +89,21 @@ class CallCoordinator:
     ) -> CallSession:
         """Create a new bidirectional translated call session."""
         sid = session_id or str(uuid.uuid4())[:8]
+        if sid in self._sessions:
+            raise ValueError(f"Call session '{sid}' already exists.")
+
+        def resolve_language(value: str) -> str:
+            if value.strip().lower() == "auto":
+                return "auto"
+            normalized = normalize_language_code(value)
+            if normalized not in SUPPORTED_LANGUAGES:
+                raise ValueError(f"Unsupported language: {value}")
+            return normalized
+
+        caller_a_lang = resolve_language(caller_a_lang)
+        caller_b_lang = resolve_language(caller_b_lang)
+        if caller_a_gender not in {"male", "female"} or caller_b_gender not in {"male", "female"}:
+            raise ValueError("Participant gender must be 'male' or 'female'.")
 
         participant_a = CallParticipant(
             participant_id="caller_a",
@@ -123,8 +141,10 @@ class CallCoordinator:
         if session:
             session.status = CallStatus.ENDED
             self.player.interrupt()
-            # Clear ephemeral voice profiles
-            self.cloner.clear_session()
+            # Only clear profiles belonging to this call; concurrent calls stay isolated.
+            self.cloner.delete_profile(f"{session_id}:caller_a")
+            self.cloner.delete_profile(f"{session_id}:caller_b")
+            self._sessions.pop(session_id, None)
             logger.info(f"Terminated CallSession '{session_id}'. Ephemeral profiles wiped.")
 
     # ------------------------------------------------------------------
@@ -158,7 +178,7 @@ class CallCoordinator:
             audio_samples = (0.5 * np.sin(2 * np.pi * f0 * t)).astype(np.float32)
 
         profile = self.cloner.enroll_speaker(
-            speaker_id=speaker_id,
+            speaker_id=f"{session_id}:{speaker_id}",
             spoken_consent_text=spoken_consent_text,
             audio_samples=audio_samples,
             sample_rate=sample_rate,
@@ -218,11 +238,12 @@ class CallCoordinator:
         asr_res = self.asr.transcribe(
             audio_or_path=audio_samples,
             language=target_asr_lang,
-            beam_size=1
+            beam_size=1,
+            # Keep raw microphone audio on-device. Cloud translation/TTS, when
+            # explicitly enabled, only receive text derived from local Whisper.
+            prefer_neural_stt=False,
         )
         asr_latency = (time.perf_counter() - t_asr_0) * 1000.0
-        lid_latency = 0.0  # Unified in single pass
-
         detected_lang = asr_res.language
         clean_original = asr_res.text.strip()
 

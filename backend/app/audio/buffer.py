@@ -5,7 +5,6 @@ Avoids disk writes and prevents clipping of early consonant onsets.
 
 import threading
 import numpy as np
-from typing import Optional
 
 
 class AudioRingBuffer:

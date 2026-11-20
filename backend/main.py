@@ -8,15 +8,17 @@ import os
 import io
 import time
 import base64
+import binascii
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Dict, Literal, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.models.call import CallSession, CallSubtitle
+from app.models.call import CallSubtitle
+from app.models.language import SUPPORTED_LANGUAGES, normalize_language_code
 from app.services.call_coordinator import CallCoordinator
 from app.services.tts_service import DEFAULT_VOICE_REGISTRY
 from app.services.lid_service import trim_silence
@@ -30,9 +32,9 @@ app = FastAPI(
     title="Multilingual Voice AI Call Translator",
     description=(
         "### 🎙️ **[👉 CLICK HERE TO OPEN INTERACTIVE CALL DASHBOARD (/)](/)** 🎙️\n\n"
-        "Real-Time Full-Duplex Bidirectional Voice Call Translation with Voice Cloning.\n\n"
+        "Real-Time Full-Duplex Bidirectional Voice Translation with Consent-Based Prosody Matching.\n\n"
         "*(Note: You are currently viewing the backend developer API documentation at `/docs`. "
-        "To experience the full interactive dashboard with live microphone speech, dual subtitles, and cloned voice playback, open **[http://localhost:8000/](/)**)*"
+        "To experience the interactive dashboard with live microphone speech, dual subtitles, and neural voice playback, open **[http://localhost:8000/](/)**)*"
     ),
     version="2.0.0"
 )
@@ -53,29 +55,30 @@ active_ws_connections: Dict[str, Dict[str, WebSocket]] = {}
 # ----------------------------------------------------------------------
 
 class CreateCallRequest(BaseModel):
-    caller_a_lang: str = "te"
-    caller_b_lang: str = "en"
-    caller_a_name: str = "Caller A (Telugu)"
-    caller_b_name: str = "Caller B (English)"
-    caller_a_gender: str = "female"
-    caller_b_gender: str = "male"
+    caller_a_lang: str = Field(default="te", min_length=2, max_length=32)
+    caller_b_lang: str = Field(default="en", min_length=2, max_length=32)
+    caller_a_name: str = Field(default="Caller A (Telugu)", min_length=1, max_length=80)
+    caller_b_name: str = Field(default="Caller B (English)", min_length=1, max_length=80)
+    caller_a_gender: Literal["female", "male"] = "female"
+    caller_b_gender: Literal["female", "male"] = "male"
 
 
 class ConsentRequest(BaseModel):
-    speaker_id: str
-    consent_text: str
+    speaker_id: Literal["caller_a", "caller_b"]
+    consent_text: str = Field(min_length=1, max_length=1000)
+    audio_base64: Optional[str] = Field(default=None, max_length=25_000_000)
 
 
 class TurnRequest(BaseModel):
-    speaker_id: str
-    text: str
+    speaker_id: Literal["caller_a", "caller_b"]
+    text: str = Field(min_length=1, max_length=5000)
     language: Optional[str] = None
 
 
 class AudioTurnRequest(BaseModel):
-    speaker_id: str = "caller_a"
-    audio_base64: str
-    client_duration_sec: Optional[float] = None
+    speaker_id: Literal["caller_a", "caller_b"] = "caller_a"
+    audio_base64: str = Field(min_length=1, max_length=25_000_000)
+    client_duration_sec: Optional[float] = Field(default=None, gt=0.0, le=120.0)
 
 
 # ----------------------------------------------------------------------
@@ -113,9 +116,15 @@ def list_voices():
 @app.post("/api/call/create")
 def create_call(req: CreateCallRequest):
     """Initialize a new bidirectional translated call session."""
+    languages = []
+    for raw_language in (req.caller_a_lang, req.caller_b_lang):
+        normalized = "auto" if raw_language.strip().lower() == "auto" else normalize_language_code(raw_language)
+        if normalized != "auto" and normalized not in SUPPORTED_LANGUAGES:
+            raise HTTPException(status_code=422, detail=f"Unsupported language: {raw_language}")
+        languages.append(normalized)
     session = coordinator.create_session(
-        caller_a_lang=req.caller_a_lang,
-        caller_b_lang=req.caller_b_lang,
+        caller_a_lang=languages[0],
+        caller_b_lang=languages[1],
         caller_a_name=req.caller_a_name,
         caller_b_name=req.caller_b_name,
         caller_a_gender=req.caller_a_gender,
@@ -139,10 +148,30 @@ def get_call(session_id: str):
 def enroll_consent(session_id: str, req: ConsentRequest):
     """Enroll speaker's verbal authorization for ethical voice modeling."""
     try:
+        audio_samples = None
+        sample_rate = 16000
+        if req.audio_base64:
+            try:
+                raw_audio = base64.b64decode(req.audio_base64, validate=True)
+                audio_samples, sample_rate = sf.read(io.BytesIO(raw_audio), dtype="float32")
+                if audio_samples.ndim > 1:
+                    audio_samples = audio_samples.mean(axis=1)
+                if sample_rate != 16000 and len(audio_samples) > 0:
+                    import scipy.signal
+                    target_length = int(len(audio_samples) * 16000 / sample_rate)
+                    audio_samples = scipy.signal.resample(audio_samples, target_length).astype(np.float32)
+                    sample_rate = 16000
+            except (binascii.Error, ValueError) as exc:
+                raise HTTPException(status_code=400, detail="Consent audio is invalid") from exc
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail="Consent audio is not a supported audio file") from exc
+
         result = coordinator.enroll_consent(
             session_id=session_id,
             speaker_id=req.speaker_id,
-            spoken_consent_text=req.consent_text
+            spoken_consent_text=req.consent_text,
+            audio_samples=audio_samples,
+            sample_rate=sample_rate,
         )
         return {"status": "success", **result}
     except PermissionError as pe:
@@ -166,13 +195,25 @@ def process_turn(session_id: str, req: TurnRequest):
         raise HTTPException(status_code=404, detail="Speaker not found in session")
 
     recipient = session.get_recipient(req.speaker_id)
+    if not req.text.strip():
+        raise HTTPException(status_code=422, detail="Turn text cannot be blank")
     src_lang = req.language or speaker.native_language
+    if src_lang == "auto":
+        script_decision = coordinator.lid.identify_script(req.text)
+        src_lang = script_decision.language_code if script_decision else "en"
+    else:
+        src_lang = normalize_language_code(src_lang)
+        if src_lang not in SUPPORTED_LANGUAGES:
+            raise HTTPException(status_code=422, detail=f"Unsupported language: {req.language}")
+    target_lang = recipient.native_language
+    if target_lang == "auto":
+        target_lang = "en" if src_lang != "en" else "te"
 
     t0 = time.perf_counter()
     trans_res = coordinator.translation.translate(
         text=req.text,
         source_lang=src_lang,
-        target_lang=recipient.native_language,
+        target_lang=target_lang,
         speaker_name=speaker.name,
         receiver_name=recipient.name
     )
@@ -185,7 +226,7 @@ def process_turn(session_id: str, req: TurnRequest):
 
     tts_res = coordinator.tts.synthesize(
         text=trans_res.translated_text,
-        language_code=recipient.native_language,
+        language_code=target_lang,
         gender=speaker.gender,
         pitch=pitch_adj,
         rate=rate_adj
@@ -204,7 +245,7 @@ def process_turn(session_id: str, req: TurnRequest):
         speaker_name=speaker.name,
         original_language=src_lang,
         original_text=req.text,
-        target_language=recipient.native_language,
+        target_language=target_lang,
         translated_text=trans_res.translated_text,
         asr_latency_ms=0.0,
         translation_latency_ms=trans_latency,
@@ -231,11 +272,19 @@ def process_audio_turn(session_id: str, req: AudioTurnRequest):
     session = coordinator.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Call session not found")
+    if not session.get_participant(req.speaker_id):
+        raise HTTPException(status_code=404, detail="Speaker not found in session")
 
     try:
-        raw_bytes = base64.b64decode(req.audio_base64)
+        try:
+            raw_bytes = base64.b64decode(req.audio_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="audio_base64 is not valid base64") from exc
         bio = io.BytesIO(raw_bytes)
-        audio_data, sr = sf.read(bio, dtype="float32")
+        try:
+            audio_data, sr = sf.read(bio, dtype="float32")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Decoded audio is not a supported audio file") from exc
         if audio_data.ndim > 1:
             audio_data = audio_data.mean(axis=1)
 
@@ -275,7 +324,7 @@ def process_audio_turn(session_id: str, req: AudioTurnRequest):
             audio_data = (audio_data / peak * 0.90).astype(np.float32)
 
         # Pre-trim silence to ensure fast Whisper response
-        trimmed, _, trimmed_dur = trim_silence(audio_data, sample_rate=sr)
+        trimmed, _, _ = trim_silence(audio_data, sample_rate=sr)
         if len(trimmed) >= int(sr * 0.25):
             audio_data = trimmed
 
@@ -302,14 +351,25 @@ def process_audio_turn(session_id: str, req: AudioTurnRequest):
             "subtitle": subtitle.to_dict(),
             "audio_base64": audio_b64
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing audio turn: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/call/{session_id}/terminate")
-def end_call(session_id: str):
+async def end_call(session_id: str):
     """End call and wipe ephemeral voice profiles from memory."""
+    if coordinator.get_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="Call session not found")
+    connections = active_ws_connections.pop(session_id, {})
+    for websocket in connections.values():
+        try:
+            await websocket.send_json({"type": "call_ended", "session_id": session_id})
+            await websocket.close()
+        except Exception:
+            pass
     coordinator.end_session(session_id)
     return {"status": "success", "message": f"Session {session_id} terminated."}
 
@@ -325,6 +385,10 @@ async def call_websocket_endpoint(websocket: WebSocket, session_id: str, speaker
     session = coordinator.get_session(session_id)
     if not session:
         await websocket.send_json({"type": "error", "message": "Invalid session_id"})
+        await websocket.close()
+        return
+    if session.get_participant(speaker_id) is None:
+        await websocket.send_json({"type": "error", "message": "Invalid speaker_id"})
         await websocket.close()
         return
 
@@ -349,20 +413,35 @@ async def call_websocket_endpoint(websocket: WebSocket, session_id: str, speaker
                     await ws.send_json({"type": "barge_in_event", "speaker_id": speaker_id})
 
             elif msg_type == "text_turn":
-                text = data.get("text", "")
+                text = str(data.get("text", "")).strip()
+                if not text:
+                    await websocket.send_json({"type": "error", "message": "Text turn cannot be blank"})
+                    continue
                 src_lang = data.get("language")
                 speaker = session.get_participant(speaker_id)
                 recipient = session.get_recipient(speaker_id)
+                resolved_src_lang = src_lang or speaker.native_language
+                if resolved_src_lang == "auto":
+                    script_decision = coordinator.lid.identify_script(text)
+                    resolved_src_lang = script_decision.language_code if script_decision else "en"
+                else:
+                    resolved_src_lang = normalize_language_code(resolved_src_lang)
+                if resolved_src_lang not in SUPPORTED_LANGUAGES:
+                    await websocket.send_json({"type": "error", "message": "Unsupported source language"})
+                    continue
+                resolved_target_lang = recipient.native_language
+                if resolved_target_lang == "auto":
+                    resolved_target_lang = "en" if resolved_src_lang != "en" else "te"
 
                 trans_res = coordinator.translation.translate(
                     text=text,
-                    source_lang=src_lang or speaker.native_language,
-                    target_lang=recipient.native_language
+                    source_lang=resolved_src_lang,
+                    target_lang=resolved_target_lang
                 )
 
                 tts_res = coordinator.tts.synthesize(
                     text=trans_res.translated_text,
-                    language_code=recipient.native_language,
+                    language_code=resolved_target_lang,
                     gender=speaker.gender,
                     pitch=speaker.pitch_mod if speaker.voice_cloned else "+0Hz",
                     rate=speaker.rate_mod if speaker.voice_cloned else "+0%"
@@ -375,9 +454,9 @@ async def call_websocket_endpoint(websocket: WebSocket, session_id: str, speaker
                 subtitle = CallSubtitle(
                     speaker_id=speaker.participant_id,
                     speaker_name=speaker.name,
-                    original_language=src_lang or speaker.native_language,
+                    original_language=resolved_src_lang,
                     original_text=text,
-                    target_language=recipient.native_language,
+                    target_language=resolved_target_lang,
                     translated_text=trans_res.translated_text,
                     translation_latency_ms=trans_res.latency_ms,
                     tts_latency_ms=tts_res.latency_ms,
@@ -431,7 +510,19 @@ async def call_websocket_endpoint(websocket: WebSocket, session_id: str, speaker
                     for spk, ws in active_ws_connections.get(session_id, {}).items():
                         await ws.send_json(payload)
 
+            else:
+                await websocket.send_json({"type": "error", "message": f"Unsupported message type: {msg_type}"})
+
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for '{session_id}', '{speaker_id}'")
+    except Exception as exc:
+        logger.exception("WebSocket error for '%s', '%s': %s", session_id, speaker_id, exc)
+        try:
+            await websocket.send_json({"type": "error", "message": "Unable to process message"})
+        except Exception:
+            pass
+    finally:
         if session_id in active_ws_connections and speaker_id in active_ws_connections[session_id]:
             del active_ws_connections[session_id][speaker_id]
+            if not active_ws_connections[session_id]:
+                del active_ws_connections[session_id]

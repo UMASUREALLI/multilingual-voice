@@ -2,8 +2,8 @@
 Data models for Text-to-Speech (TTS) Synthesis and Voice Profiles.
 """
 
-from typing import Optional, Dict, Any, List
-from dataclasses import dataclass, field
+from typing import Optional, Dict, Any
+from dataclasses import dataclass
 import numpy as np
 
 

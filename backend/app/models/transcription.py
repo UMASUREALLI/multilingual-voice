@@ -2,7 +2,7 @@
 Data models for Speech Recognition (ASR), word-level timestamps, and subtitles.
 """
 
-from typing import List, Optional, Dict, Any
+from typing import List, Dict, Any
 from dataclasses import dataclass, field
 
 

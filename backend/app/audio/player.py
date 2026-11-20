@@ -6,13 +6,18 @@ acoustic echo feedback loops during bidirectional calls.
 Supports barge-in interruption and sequential utterance queuing.
 """
 
-import time
+from __future__ import annotations
+
 import queue
 import threading
 import logging
-from typing import Optional, Callable, List, Tuple
+import time
+from typing import TYPE_CHECKING, Optional, Callable, List
 import numpy as np
 import sounddevice as sd
+
+if TYPE_CHECKING:
+    from app.audio.streamer import LiveAudioStreamer
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +198,7 @@ class AudioPlaybackEngine:
                 self._play_queue.task_done()
 
 
-def link_playback_to_streamer(player: AudioPlaybackEngine, streamer: "LiveAudioStreamer", duck_only: bool = False) -> None:
+def link_playback_to_streamer(player: AudioPlaybackEngine, streamer: LiveAudioStreamer, duck_only: bool = False) -> None:
     """
     Convenience helper to link an AudioPlaybackEngine to a LiveAudioStreamer.
     Automatically prevents acoustic feedback loops:

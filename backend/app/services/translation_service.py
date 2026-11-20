@@ -14,9 +14,9 @@ import json
 import logging
 import urllib.request
 import urllib.parse
-from typing import Optional, List, Dict, Tuple, Any
+from typing import Optional, List, Dict, Tuple
 
-from app.models.translation import TranslationRequest, TranslationResult
+from app.models.translation import TranslationResult
 from app.models.language import SUPPORTED_LANGUAGES, LanguageInfo, normalize_language_code
 from app.services.entity_preserver import EntityPreserver
 
@@ -36,6 +36,7 @@ TRAILING_INCOMPLETE_MARKERS = {
 OFFLINE_PHRASE_BANK: Dict[Tuple[str, str, str], str] = {
     ("te", "en", "నమస్కారం, మీరు ఎలా ఉన్నారు?"): "Hello, how are you?",
     ("en", "te", "Hello, how are you?"): "నమస్కారం, మీరు ఎలా ఉన్నారు?",
+    ("en", "te", "Hello, how are you today?"): "నమస్కారం, మీరు ఈరోజు ఎలా ఉన్నారు?",
     ("te", "en", "నేను రేపు ఉదయం కాల్ చేస్తాను."): "I will call tomorrow morning.",
     ("en", "te", "I will call tomorrow morning."): "నేను రేపు ఉదయం కాల్ చేస్తాను.",
     ("hi", "en", "नमस्ते, आप कैसे हैं?"): "Hello, how are you?",
@@ -153,6 +154,23 @@ class TranslationService:
                 preserved_entities=[]
             )
 
+        # Exact offline phrases are deterministic, private, and faster than a network call.
+        offline_match = OFFLINE_PHRASE_BANK.get((src_iso, tgt_iso, clean))
+        if offline_match is not None:
+            elapsed = (time.perf_counter() - t0) * 1000.0
+            self._cache[cache_key] = offline_match
+            return TranslationResult(
+                source_text=clean,
+                translated_text=offline_match,
+                source_language=src_iso,
+                target_language=tgt_iso,
+                source_language_name=src_info.name,
+                target_language_name=tgt_info.name,
+                backend="offline_phrase_bank",
+                latency_ms=elapsed,
+                preserved_entities=[],
+            )
+
         # 3. Named Entity & Technical Term Protection
         masked_text = clean
         placeholder_map: Dict[str, str] = {}
@@ -198,7 +216,7 @@ class TranslationService:
         # Tier 3: Offline phrase bank fallback
         if not translated_masked:
             translated_masked = OFFLINE_PHRASE_BANK.get(
-                (clean, src_iso, tgt_iso),
+                (src_iso, tgt_iso, clean),
                 clean  # Graceful fallback to original text
             )
             backend_used = "offline_phrase_bank"

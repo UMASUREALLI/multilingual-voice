@@ -5,17 +5,63 @@ Supports language-constrained decoding, word-level timestamps, anti-hallucinatio
 and conversational context management.
 """
 
-import time
 import logging
+import threading
+import time
 from typing import Optional, Union, List, Dict, Any
 import numpy as np
-from faster_whisper import WhisperModel
+
+try:
+    from faster_whisper import WhisperModel
+except ImportError:  # Optional until local Whisper inference is actually needed.
+    WhisperModel = None
 
 from app.models.transcription import TranscriptionResult, TranscriptionSegment, WordTiming
 from app.models.language import SUPPORTED_LANGUAGES, LanguageInfo
 from app.services.lid_service import trim_silence, LanguageDetectionEngine
 
 logger = logging.getLogger("call_translator.asr")
+
+
+class LazyWhisperModel:
+    """Thread-safe proxy that loads faster-whisper on the first inference call."""
+
+    def __init__(self, model_size: str = "base", device: str = "cpu", compute_type: str = "int8", cpu_threads: int = 4):
+        self.model_size = model_size
+        self.device = device
+        self.compute_type = compute_type
+        self.cpu_threads = cpu_threads
+        self._model = None
+        self._lock = threading.Lock()
+
+    def _get_model(self):
+        if self._model is None:
+            with self._lock:
+                if self._model is None:
+                    if WhisperModel is None:
+                        raise RuntimeError(
+                            "faster-whisper is not installed. Install the full requirements.txt "
+                            "to enable offline speech recognition."
+                        )
+                    logger.info(
+                        "Initializing faster-whisper '%s' (%s on %s)...",
+                        self.model_size,
+                        self.compute_type,
+                        self.device,
+                    )
+                    self._model = WhisperModel(
+                        self.model_size,
+                        device=self.device,
+                        compute_type=self.compute_type,
+                        cpu_threads=self.cpu_threads,
+                    )
+        return self._model
+
+    def transcribe(self, *args, **kwargs):
+        return self._get_model().transcribe(*args, **kwargs)
+
+    def detect_language(self, *args, **kwargs):
+        return self._get_model().detect_language(*args, **kwargs)
 
 # BCP-47 locale mapping for high-accuracy native-script Neural STT across Indian & Global languages
 LANG_TO_GOOGLE_LOCALE: Dict[str, str] = {
@@ -101,21 +147,17 @@ class StreamingAsrService:
         device: str = "cpu",
         compute_type: str = "int8",
         cpu_threads: int = 4,
-        shared_model: Optional[WhisperModel] = None
+        shared_model: Optional[Any] = None
     ):
         self.model_size = model_size
         self.context_manager = ConversationalContextManager()
 
-        if shared_model is not None:
-            self.model = shared_model
-        else:
-            logger.info(f"Initializing faster-whisper '{model_size}' ({compute_type} on {device})...")
-            self.model = WhisperModel(
-                model_size,
-                device=device,
-                compute_type=compute_type,
-                cpu_threads=cpu_threads
-            )
+        self.model = shared_model or LazyWhisperModel(
+            model_size=model_size,
+            device=device,
+            compute_type=compute_type,
+            cpu_threads=cpu_threads,
+        )
 
     @classmethod
     def get_instance(cls, model_size: str = "base") -> "StreamingAsrService":
@@ -292,22 +334,41 @@ class StreamingAsrService:
         # 4. Offline Fallback / Word-Timestamps Path: Local Faster-Whisper (INT8 CPU)
         # Note: repetition_penalty=1.0 and no_repeat_ngram_size=0 prevent UTF-8 3-byte Indic script corruption.
         prompt = initial_prompt
-        segments, info = self.model.transcribe(
-            audio,
-            language=resolved_lang,
-            initial_prompt=prompt,
-            beam_size=beam_size,
-            best_of=1,
-            word_timestamps=word_timestamps,
-            repetition_penalty=1.0,
-            no_repeat_ngram_size=0,
-            condition_on_previous_text=False,
-            temperature=0.0,
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=250),
-            compression_ratio_threshold=2.4,
-            no_speech_threshold=0.6
-        )
+        try:
+            segments, info = self.model.transcribe(
+                audio,
+                language=resolved_lang,
+                initial_prompt=prompt,
+                beam_size=beam_size,
+                best_of=1,
+                word_timestamps=word_timestamps,
+                repetition_penalty=1.0,
+                no_repeat_ngram_size=0,
+                condition_on_previous_text=False,
+                temperature=0.0,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=250),
+                compression_ratio_threshold=2.4,
+                no_speech_threshold=0.6
+            )
+        except Exception as exc:
+            logger.warning("Offline ASR unavailable: %s", exc)
+            elapsed_sec = time.perf_counter() - t0
+            lang_info = SUPPORTED_LANGUAGES.get(
+                resolved_lang,
+                LanguageInfo(resolved_lang, resolved_lang.title(), resolved_lang),
+            )
+            return TranscriptionResult(
+                text="",
+                language=resolved_lang,
+                language_name=lang_info.name,
+                language_probability=lang_prob,
+                duration_sec=duration_sec,
+                latency_ms=elapsed_sec * 1000.0,
+                rtf=elapsed_sec / max(0.1, duration_sec),
+                segments=[],
+                words=[],
+            )
 
         segs_list = list(segments)
         elapsed_sec = time.perf_counter() - t0

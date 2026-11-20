@@ -201,8 +201,6 @@ class VoiceCloningService:
 
         # Speaking rate proxy: energy envelopes
         # Count major syllable energy peaks
-        voiced_frames = len(f0_estimates)
-        voiced_sec = (voiced_frames * hop_len) / sample_rate
         # Average English/Indian speaking rate: ~130 - 150 WPM
         wpm_est = 140.0
 
@@ -301,6 +299,13 @@ class VoiceCloningService:
             self._profiles[speaker_id].consent_status = ConsentStatus.REVOKED
             self._profiles[speaker_id].acoustic_features = None
             logger.info(f"Consent revoked for speaker '{speaker_id}'. Acoustic profile destroyed.")
+
+    def delete_profile(self, speaker_id: str) -> None:
+        """Permanently remove one ephemeral profile without affecting other calls."""
+        profile = self._profiles.pop(speaker_id, None)
+        if profile is not None:
+            profile.acoustic_features = None
+            logger.info("Destroyed ephemeral voice profile for speaker '%s'.", speaker_id)
 
     def clear_session(self) -> None:
         """Destroy all enrolled profiles at end of call session. Zero persistence."""
