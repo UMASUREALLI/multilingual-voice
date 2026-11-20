@@ -145,7 +145,48 @@ def generate_call_partner_reply(user_text: str, reply_lang: str = "en") -> str:
         }
         return replies.get(reply_lang, replies["en"])
 
-    # 7. What is your name / Who are you
+    # 7. Gaming & Esports (Free Fire, PUBG, Sri Hari playing games, etc.)
+    gaming_patterns = [
+        "freefire", "frefire", "free fire", "pubg", "bgmi", "gaming", "playing game",
+        "video game", "games", "gamer", "play game"
+    ]
+    if any(q in text_lower for q in gaming_patterns):
+        replies = {
+            "en": "Yes! Free Fire is such an action-packed game! Sri Hari must be having a lot of fun. Is he winning the match?",
+            "te": "అవును! ఫ్రీ ఫైర్ చాలా ఉత్సాహవంతమైన గేమ్! శ్రీహరి బాగా ఆడుతున్నారా? మ్యాచ్ గెలుస్తున్నారా?",
+            "ta": "ஆம்! ஃப்ரீ ஃபையர் மிகவும் விறுவிறுப்பான விளையாட்டு! ஸ்ரீ ஹரி வெற்றி பெறுகிறாரா?",
+            "hi": "हाँ! फ्री फायर बहुत रोमांचक गेम है. श्री हरि बहुत मजे कर रहे होंगे! क्या वो मैच जीत रहे हैं?"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 8. Outing, Weekend & Picnic Ideas
+    outing_patterns = [
+        "outing", "outings", "trip", "picnic", "travel", "weekend", "hangout",
+        "places to visit", "vacation", "ideas for outing", "tour"
+    ]
+    if any(q in text_lower for q in outing_patterns):
+        replies = {
+            "en": "For a wonderful outing, you could visit a serene lake or park, head to a scenic nature resort, check out a nice rooftop cafe, or catch a great movie together!",
+            "te": "మంచి ఔటింగ్ కోసం ప్రశాంతమైన పార్క్ లేదా సరస్సుకి వెళ్లవచ్చు, లేదా మంచి రెస్టారెంట్‌లో భోజనం చేసి సినిమా చూడవచ్చు!",
+            "ta": "அவுட்டிங் செல்ல அமைதியான பூங்கா, கடற்கரை அல்லது நல்ல திரையரங்கிற்கு சென்று படம் பார்க்கலாம்!",
+            "hi": "शानदार आउटिंग के लिए आप किसी शांत झील या पार्क जा सकते हैं, अच्छे कैफे जा सकते हैं या कोई नई मूवी देख सकते हैं!"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 9. Movies & Entertainment
+    movie_patterns = [
+        "movie", "cinema", "film", "theatre", "series", "netflix", "watching"
+    ]
+    if any(q in text_lower for q in movie_patterns):
+        replies = {
+            "en": "Watching movies is always great fun! Which genre or movie are you planning to watch?",
+            "te": "సినిమా చూడటం చాలా మంచి ఆలోచన! మీరు ఏ సినిమా చూడాలని అనుకుంటున్నారు?",
+            "ta": "திரைப்படம் பார்ப்பது அருமையான பொழுதுபோக்கு! நீங்கள் எந்த படம் பார்க்க விரும்புகிறீர்கள்?",
+            "hi": "मूवी देखना बहुत मजेदार होता है! आप कौन सी मूवी देखने की सोच रहे हैं?"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 10. What is your name / Who are you
     name_patterns = [
         "who are you", "your name", "what is your name", "who r u",
         "మీ పేరు", "evaru meeru", "mee peru enti",
