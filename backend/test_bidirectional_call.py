@@ -94,6 +94,7 @@ def main():
     parser.add_argument("--duration", type=float, default=None, help="Call duration limit in seconds (default: runs indefinitely until Ctrl+C)")
     parser.add_argument("--text", action="store_true", help="Interactive keyboard text mode (type instead of speaking)")
     parser.add_argument("--gemini-key", type=str, default=None, help="Google Gemini API Key for unlimited real-time AI reasoning to any question")
+    parser.add_argument("--demo", action="store_true", help="Play multilingual voice demo speaking in 6 languages")
     args = parser.parse_args()
 
     lang_a = normalize_language_code(args.party_a, default="en")
@@ -171,6 +172,34 @@ def main():
     except Exception:
         pass
 
+    # Multilingual Voice Showcase Demo
+    if args.demo:
+        print("\n" + "=" * 76)
+        print("🌍 MULTILINGUAL VOICE DEMO: Speaking 6 Languages Through Your Speakers!")
+        print("=" * 76)
+        demo_phrases = [
+            ("en", "Hello Uma! This is our real-time voice translation system speaking in English."),
+            ("te", "నమస్కారం ఉమా గారు! మన వాయిస్ సిస్టమ్ తెలుగులో స్పష్టంగా మాట్లాడగలదు."),
+            ("hi", "नमस्ते उमा जी! हमारा सिस्टम हिंदी में भी बहुत स्वाभाविक बोलता है."),
+            ("ta", "வணக்கம் உமா! நமது அமைப்பு தமிழிலும் மிக அழகாக பேசும்."),
+            ("kn", "ನಮಸ್ಕಾರ ಉಮಾ! ನಮ್ಮ ಸಿಸ್ಟಮ್ ಕನ್ನಡದಲ್ಲೂ ಮಾತನಾಡಬಲ್ಲದು."),
+            ("es", "¡Hola Uma! Nuestro sistema también habla español con fluidez.")
+        ]
+        for lang_code, phrase in demo_phrases:
+            lang_name = SUPPORTED_LANGUAGES.get(lang_code, LanguageInfo(lang_code, lang_code.title(), lang_code)).name
+            print(f"\n🗣️ Speaking in {lang_name} [{lang_code.upper()}]:")
+            print(f"   \"{phrase}\"")
+            tts_res = tts.synthesize(text=phrase, language_code=lang_code, gender="female")
+            print(f"   🎙️ Neural Voice: {tts_res.voice_id} ({tts_res.duration_sec:.1f}s)")
+            sys.stdout.flush()
+            player.play(tts_res.audio, sample_rate=tts_res.sample_rate, blocking=True)
+            time.sleep(0.4)
+        print("\n" + "=" * 76)
+        print("✅ MULTILINGUAL DEMO COMPLETE: 6 languages spoken aloud!")
+        print("=" * 76 + "\n")
+        player.stop()
+        return
+
     turn_count = 0
 
     def process_turn(audio_samples: np.ndarray, sample_rate: int = 16000):
@@ -220,13 +249,17 @@ def main():
         print("   " + "-" * 72)
 
         # Step 3: Call Partner (Sarah) Contextual Response
-        reply_in_b_lang = generate_call_partner_reply(
+        reply_in_b_raw = generate_call_partner_reply(
             spoken_text,
             reply_lang=lang_b,
             gemini_key=args.gemini_key,
             user_name=name_a,
             partner_name=name_b
         )
+        if lang_b == "en":
+            reply_in_b_lang = reply_in_b_raw
+        else:
+            reply_in_b_lang = translation.translate(reply_in_b_raw, source_lang="en", target_lang=lang_b).translated_text
 
         # Translate reply to A's language (if different)
         if lang_a == lang_b:
@@ -249,17 +282,21 @@ def main():
 
         # Step 4: Synthesize Neural Voice and Speak Aloud
         try:
-            tts_lang = lang_a if lang_a == lang_b else lang_a
-            tts_res = tts.synthesize(
-                text=spoken_reply_for_a,
-                language_code=tts_lang,
-                gender=args.gender_b
-            )
-            print(f"   🎙️ Neural Voice: {tts_res.voice_id}")
-            print(f"   🔊 Speaking {name_b}'s reply aloud through your earphones/speakers...")
-            print("=" * 76)
-            sys.stdout.flush()
-            player.play(tts_res.audio, sample_rate=tts_res.sample_rate, blocking=True)
+            if lang_b != lang_a:
+                print(f"   🔊 [1/2] Speaking {name_b}'s reply in {info_b.name} [{lang_b.upper()}]...")
+                tts_b = tts.synthesize(text=reply_in_b_lang, language_code=lang_b, gender=args.gender_b)
+                player.play(tts_b.audio, sample_rate=tts_b.sample_rate, blocking=True)
+                time.sleep(0.3)
+                print(f"   🔊 [2/2] Delivered to {name_a} in {info_a.name} [{lang_a.upper()}]...")
+                tts_a = tts.synthesize(text=spoken_reply_for_a, language_code=lang_a, gender=args.gender_b)
+                player.play(tts_a.audio, sample_rate=tts_a.sample_rate, blocking=True)
+            else:
+                tts_res = tts.synthesize(text=spoken_reply_for_a, language_code=lang_a, gender=args.gender_b)
+                print(f"   🎙️ Neural Voice: {tts_res.voice_id}")
+                print(f"   🔊 Speaking {name_b}'s reply aloud through your earphones/speakers...")
+                print("=" * 76)
+                sys.stdout.flush()
+                player.play(tts_res.audio, sample_rate=tts_res.sample_rate, blocking=True)
             print(f"\n[Microphone Active] Listening for {name_a} to speak again...")
             sys.stdout.flush()
         except Exception as e:
@@ -289,25 +326,40 @@ def main():
                 print(f"   🌐 Delivered to {name_b}: \"{trans_for_b}\"")
 
                 # B's contextual reply
-                reply_in_b = generate_call_partner_reply(
+                reply_in_b_raw = generate_call_partner_reply(
                     user_msg,
                     reply_lang=lang_b,
                     gemini_key=args.gemini_key,
                     user_name=name_a,
                     partner_name=name_b
                 )
+                if lang_b == "en":
+                    reply_in_b = reply_in_b_raw
+                else:
+                    reply_in_b = translation.translate(reply_in_b_raw, source_lang="en", target_lang=lang_b).translated_text
+
                 if lang_a == lang_b:
                     reply_for_a = reply_in_b
                 else:
                     tr2 = translation.translate(reply_in_b, source_lang=lang_b, target_lang=lang_a)
                     reply_for_a = tr2.translated_text
 
-                print(f"   👤 {name_b} ({lang_b.upper()}): \"{reply_in_b}\"")
-                print(f"   🌐 Translated to {lang_a.upper()}: \"{reply_for_a}\"")
-                print(f"   🔊 Speaking aloud through your earphones/speakers...")
+                print(f"   👤 {name_b} ({info_b.name} [{lang_b.upper()}]): \"{reply_in_b}\"")
+                if lang_a != lang_b:
+                    print(f"   🌐 Translated to {info_a.name} [{lang_a.upper()}]: \"{reply_for_a}\"")
 
-                tts_res = tts.synthesize(text=reply_for_a, language_code=lang_a, gender=args.gender_b)
-                player.play(tts_res.audio, sample_rate=tts_res.sample_rate, blocking=True)
+                if lang_b != lang_a:
+                    print(f"   🔊 [1/2] Speaking {name_b}'s reply in {info_b.name} [{lang_b.upper()}]...")
+                    tts_b = tts.synthesize(text=reply_in_b, language_code=lang_b, gender=args.gender_b)
+                    player.play(tts_b.audio, sample_rate=tts_b.sample_rate, blocking=True)
+                    time.sleep(0.3)
+                    print(f"   🔊 [2/2] Delivered to {name_a} in {info_a.name} [{lang_a.upper()}]...")
+                    tts_a = tts.synthesize(text=reply_for_a, language_code=lang_a, gender=args.gender_b)
+                    player.play(tts_a.audio, sample_rate=tts_a.sample_rate, blocking=True)
+                else:
+                    print(f"   🔊 Speaking aloud through your earphones/speakers...")
+                    tts_res = tts.synthesize(text=reply_for_a, language_code=lang_a, gender=args.gender_b)
+                    player.play(tts_res.audio, sample_rate=tts_res.sample_rate, blocking=True)
 
             except (KeyboardInterrupt, EOFError):
                 break
