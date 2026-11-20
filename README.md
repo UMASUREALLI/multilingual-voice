@@ -27,7 +27,7 @@ Follow these steps to set up and run the project on a new laptop.
 
 ### 2. Clone the Repository
 ```powershell
-git clone https://github.com/<YOUR_GITHUB_USERNAME>/multilingual-voice.git
+git clone https://github.com/UMASUREALLI/multilingual-voice.git
 cd multilingual-voice
 ```
 
@@ -109,12 +109,29 @@ Test any individual language and gender voice:
 python test_realtime_tts.py --interactive
 ```
 
-### 5. FastAPI Backend Server
-Launch the REST & WebSocket call coordination service:
+### 5. Bidirectional AI Call Partner (Live Conversational Voice Call)
+Engage in a live, full-duplex conversational voice call with an AI partner powered by a local neural Small Language Model (`Qwen2.5-0.5B-Instruct` on CPU) or Google Gemini:
+```powershell
+# English <-> Telugu full-duplex call with speaker output and keyboard input
+python test_bidirectional_call.py --party-a en --party-b te --speaker --text
+
+# Full live microphone mode (speak aloud into your mic)
+python test_bidirectional_call.py --party-a en --party-b te --speaker
+
+# 6-Language Neural Voice Showcase Demo (plays spoken greetings across EN, TE, HI, TA, KN, ES)
+python test_bidirectional_call.py --demo
+```
+
+### 6. Interactive Visual Web Call Dashboard (FastAPI Server)
+Launch the visual real-time call translator dashboard with live microphone capture, dual synchronized subtitles, and neural voice synthesis:
 ```powershell
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
-- Interactive Swagger API docs: `http://localhost:8000/docs`
+- **🌐 Visual Web Dashboard**: Open [http://localhost:8000/](http://localhost:8000/) in your browser
+  - 🎯 **Auto-Detect Language (LID)**: Speak in any tongue—the model auto-identifies it.
+  - ⚡ **1-Click Simulation**: Click *"Simulate Bidirectional Turn"* to test without a microphone.
+  - 🎙️ **Live Mic Translation**: Click *"Speak as Speaker A"* or *"Speaker B"*, speak naturally, and hear the translation in the partner's cloned voice!
+- **📖 Developer OpenAPI Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 ---
 
@@ -124,11 +141,14 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 multilingual-voice/
 ├── backend/
 │   ├── app/
-│   │   ├── audio/              # Live capture, VAD, playback & echo prevention
+│   │   ├── audio/              # Live capture, VAD, playback & echo suppression
 │   │   ├── models/             # Pydantic schemas (call, language, audio, tts)
-│   │   ├── services/           # LID, ASR, translation, TTS & voice cloning
+│   │   ├── services/           # LID, ASR, NMT, TTS, Voice Cloning, LLM Dialogue
+│   │   │   └── llm_dialogue.py # Dynamic neural SLM (Qwen2.5) + Gemini fallback
+│   │   ├── static/             # Interactive Call Dashboard (HTML5, WebAudio, CSS3)
 │   │   └── api/                # FastAPI routes & WebSocket coordinators
 │   ├── tests/                  # 56 automated unit and integration tests
+│   ├── test_bidirectional_call.py # Bidirectional full-duplex AI voice call CLI
 │   ├── test_live_call.py       # Full-duplex live call translation CLI
 │   ├── test_realtime_translation.py # Live mic translation testing
 │   ├── test_realtime_tts.py    # Neural TTS benchmark & interactive CLI
