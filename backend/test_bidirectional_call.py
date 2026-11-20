@@ -217,18 +217,6 @@ def main():
         player.play(chime, sample_rate=24000, blocking=True)
     except Exception:
         pass
-    dev_name = "Default Microphone"
-    try:
-        active_idx = streamer.device_index if streamer.device_index is not None else sd.default.device[0]
-        dev_info = sd.query_devices(active_idx)
-        dev_name = f"[{active_idx}] {dev_info.get('name')}"
-    except Exception:
-        pass
-
-    print_banner(name_a, lang_a, name_b, lang_b, dev_name)
-
-    # Echo feedback prevention
-    link_playback_to_streamer(player, streamer, duck_only=False)
 
     turn_count = 0
 
