@@ -36,420 +36,30 @@ from app.services.voice_cloner import VoiceCloningService
 from app.models.language import SUPPORTED_LANGUAGES, LanguageInfo, normalize_language_code
 
 
-_FALLBACK_INDEX = 0
+from app.services.llm_dialogue import DynamicDialogueService
+
+_dialogue_service: Optional[DynamicDialogueService] = None
 
 
-def query_gemini_llm(user_text: str, reply_lang: str = "en", api_key: Optional[str] = None) -> Optional[str]:
-    """
-    Optional LLM brain: queries Google Gemini 2.0 / 1.5 Flash for natural, open-ended
-    conversational intelligence to answer ANY question on Earth when an API key is available.
-    """
-    key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
-    if not key:
-        return None
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
-        headers = {"Content-Type": "application/json"}
-        lang_prompt = f"in {reply_lang}" if reply_lang != "en" else "in natural English"
-        prompt = (
-            f"You are Sarah, a warm, intelligent AI conversational partner on a real-time voice call with Uma. "
-            f"Respond directly, accurately, and naturally to what Uma says in 1 or 2 spoken sentences {lang_prompt}. "
-            f"Never use markdown, emojis, asterisks, bullet points, or stage directions. Spoken voice only.\n\n"
-            f"Uma: {user_text}\n"
-            f"Sarah:"
+def get_dialogue_service(gemini_key: Optional[str] = None, user_name: str = "Uma", partner_name: str = "Sarah") -> DynamicDialogueService:
+    global _dialogue_service
+    if _dialogue_service is None:
+        _dialogue_service = DynamicDialogueService(
+            gemini_api_key=gemini_key,
+            user_name=user_name,
+            partner_name=partner_name
         )
-        payload = json.dumps({
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"maxOutputTokens": 75, "temperature": 0.7}
-        }).encode("utf-8")
-        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=3.5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            candidate = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-            # Clean up any quotes or markdown
-            candidate = candidate.replace("*", "").replace("\"", "").replace("\n", " ").strip()
-            if candidate:
-                return candidate
-    except Exception:
-        pass
-    return None
+    return _dialogue_service
 
 
-def generate_call_partner_reply(user_text: str, reply_lang: str = "en", gemini_key: Optional[str] = None) -> str:
+def generate_call_partner_reply(user_text: str, reply_lang: str = "en", gemini_key: Optional[str] = None, user_name: str = "Uma", partner_name: str = "Sarah") -> str:
     """
-    Intelligent conversational call partner response generator.
-    1. Checks Gemini LLM first (if key provided) for unlimited question answering.
-    2. Uses comprehensive local knowledge base for offline operation.
+    100% Dynamic Generative AI Call Partner response generator.
+    Zero static answers. Zero hardcoded if-else statements.
+    Generates open-ended neural responses for any input via local Qwen2.5-0.5B (or Gemini if key provided).
     """
-    global _FALLBACK_INDEX
-    text_lower = user_text.lower().strip()
-
-    # Priority 0: Query Gemini LLM if key is available
-    llm_resp = query_gemini_llm(user_text, reply_lang=reply_lang, api_key=gemini_key)
-    if llm_resp:
-        return llm_resp
-
-    # 1. Greetings & "How are you" (tolerates typos like 'how are ou', 'how r u', 'ela unnaru', etc.)
-    how_are_you_patterns = [
-        "how are you", "how are ou", "how r u", "how u", "hw r u", "how do you do",
-        "how are things", "whats up", "what's up", "wassup", "sup",
-        # Telugu (Native & Romanized)
-        "బాగున్నారా", "ఎలా ఉన్నారు", "ela unnaru", "ela unnav", "bagunnara", "bagunnava", "kusalama",
-        # Hindi
-        "हालचाल", "कैसे हो", "kaise ho", "kya haal",
-        # Tamil
-        "எப்படி இருக்கிறீர்கள்", "eppadi irukkeenga", "eppadi irukinga"
-    ]
-    if any(q in text_lower for q in how_are_you_patterns):
-        replies = {
-            "en": "Hey, I'm good! What about you?",
-            "te": "హలో, నేను చాలా బాగున్నాను! మీరు ఎలా ఉన్నారు?",
-            "ta": "வணக்கம், நான் நன்றாக இருக்கிறேன்! நீங்கள் எப்படி இருக்கிறீர்கள்?",
-            "hi": "नमस्ते, मैं बहुत अच्छा हूँ! आप कैसे हैं?"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 2. General Greetings (hi, hello, namaste, namaskaram)
-    greeting_patterns = [
-        "hi", "hello", "hey", "good morning", "good evening", "good afternoon",
-        "నమస్కారం", "namaskaram", "namaste", "வணக்கம்", "vanakkam", "नमस्ते"
-    ]
-    if any(q in text_lower for q in greeting_patterns):
-        replies = {
-            "en": "Hello! Great to hear from you. How are you doing today?",
-            "te": "నమస్కారం! మీతో మాట్లాడటం ఆనందంగా ఉంది. ఎలా ఉన్నారు?",
-            "ta": "வணக்கம்! உங்களுடன் பேசுவதில் மகிழ்ச்சி. இன்று எப்படி இருக்கிறீர்கள்?",
-            "hi": "नमस्ते! आपसे बात करके अच्छा लगा. आज आप कैसे हैं?"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 3. Meals, Dinner, Lunch, Food queries ("have your dinner", "had lunch", "tinnara", etc.)
-    food_patterns = [
-        "dinner", "lunch", "breakfast", "food", "eat", "eaten", "having food",
-        "have your dinner", "had your dinner", "have dinner", "had dinner",
-        # Telugu
-        "తిన్నారా", "భోజనం", "tinnara", "thinnara", "thinnava", "tinnava", "bhojanam", "tiffin",
-        # Hindi
-        "खाना", "khana", "khaya", "khaa liya",
-        # Tamil
-        "சாப்பிட்டீர்களா", "சாப்பாடு", "sappittacha", "sappadu"
-    ]
-    if any(q in text_lower for q in food_patterns):
-        replies = {
-            "en": "Yes, I had my food already! Thank you for asking. Did you have yours?",
-            "te": "అవును, నా భోజనం అయిపోయింది! అడిగినందుకు ధన్యవాదాలు. మీరు తిన్నారా?",
-            "ta": "ஆம், நான் சாப்பிட்டுவிட்டேன்! நீங்கள் சாப்பிட்டீர்களா?",
-            "hi": "हाँ, मैंने खाना खा लिया! पूछने के लिए शुक्रिया. क्या आपने खाया?"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 4. Can you hear me / audio check
-    hear_patterns = [
-        "can you hear me", "hear me", "speaking to you", "am i audible", "sound check",
-        "వినిపిస్తుందా", "vinipistunda", "vinipistundha",
-        "கேட்கிறதா", "ketkiratha", "kekutha",
-        "सुन पा रहे", "awaaz aa rahi", "sunai de raha"
-    ]
-    if any(q in text_lower for q in hear_patterns):
-        replies = {
-            "en": "Yes, I can hear you loud and clear! The voice translation is working seamlessly.",
-            "te": "అవును, మీ మాటలు చాలా స్పష్టంగా వినిపిస్తున్నాయి! అనువాదం చాలా బాగా పనిచేస్తోంది.",
-            "ta": "ஆம், நீங்கள் பேசுவது தெளிவாக கேட்கிறது! மொழிபெயர்ப்பு நன்றாக செயல்படுகிறது.",
-            "hi": "हाँ, मैं आपको बिल्कुल साफ़ सुन सकता हूँ! ट्रांसलेशन बहुत अच्छा काम कर रहा है."
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 5. What are you doing / Work / Project queries
-    activity_patterns = [
-        "what are you doing", "what doing", "what project", "about project", "office", "work", "busy",
-        "ఏం చేస్తున్నారు", "em chestunnav", "em chestunnaru",
-        "என்ன செய்கிறீர்கள்", "enna panreenga",
-        "क्या कर रहे", "kya kar rahe ho"
-    ]
-    if any(q in text_lower for q in activity_patterns):
-        replies = {
-            "en": "I'm testing our real-time voice call translation system with you right now!",
-            "te": "మనం ప్రస్తుతం రియల్ టైమ్ వాయిస్ కాల్ అనువాద వ్యవస్థను పరీక్షిస్తున్నాము!",
-            "ta": "நாம் இப்போது நிகழ்நேர குரல் அழைப்பு மொழிபெயர்ப்பு அமைப்பை சோதிக்கிறோம்!",
-            "hi": "हम अभी हमारे रीयल-टाइम वॉयस कॉल ट्रांसलेशन सिस्टम का परीक्षण कर रहे हैं!"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 6. Where are you / Location
-    location_patterns = [
-        "where are you", "where r u", "where do you live", "location",
-        "ఎక్కడ ఉన్నారు", "ekkada unnav", "ekkaduntaru",
-        "எங்கே இருக்கிறீர்கள்", "enga irukkeenga",
-        "कहाँ हो", "kahan ho"
-    ]
-    if any(q in text_lower for q in location_patterns):
-        replies = {
-            "en": "I'm right here with you on the call, ready to chat anytime!",
-            "te": "నేను ఇక్కడే మీతో కాల్‌లో ఉన్నాను, మీతో మాట్లాడటానికి సిద్ధంగా ఉన్నాను!",
-            "ta": "நான் இதோ உங்கள் அழைப்பில் உங்களுடன் பேச தயாராக இருக்கிறேன்!",
-            "hi": "मैं यहीं आपके साथ कॉल पर हूँ, आपसे बात करने के लिए हमेशा तैयार!"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 7. Gaming & Esports (Free Fire, PUBG, Sri Hari playing games, etc.)
-    gaming_patterns = [
-        "freefire", "frefire", "free fire", "pubg", "bgmi", "gaming", "playing game",
-        "video game", "games", "gamer", "play game"
-    ]
-    if any(q in text_lower for q in gaming_patterns):
-        replies = {
-            "en": "Yes! Free Fire is such an action-packed game! Sri Hari must be having a lot of fun. Is he winning the match?",
-            "te": "అవును! ఫ్రీ ఫైర్ చాలా ఉత్సాహవంతమైన గేమ్! శ్రీహరి బాగా ఆడుతున్నారా? మ్యాచ్ గెలుస్తున్నారా?",
-            "ta": "ஆம்! ஃப்ரீ ஃபையர் மிகவும் விறுவிறுப்பான விளையாட்டு! ஸ்ரீ ஹரி வெற்றி பெறுகிறாரா?",
-            "hi": "हाँ! फ्री फायर बहुत रोमांचक गेम है. श्री हरि बहुत मजे कर रहे होंगे! क्या वो मैच जीत रहे हैं?"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 8. Outing, Weekend & Picnic Ideas
-    outing_patterns = [
-        "outing", "outings", "trip", "picnic", "travel", "weekend", "hangout",
-        "places to visit", "vacation", "ideas for outing", "tour"
-    ]
-    if any(q in text_lower for q in outing_patterns):
-        replies = {
-            "en": "For a wonderful outing, you could visit a serene lake or park, head to a scenic nature resort, check out a nice rooftop cafe, or catch a great movie together!",
-            "te": "మంచి ఔటింగ్ కోసం ప్రశాంతమైన పార్క్ లేదా సరస్సుకి వెళ్లవచ్చు, లేదా మంచి రెస్టారెంట్‌లో భోజనం చేసి సినిమా చూడవచ్చు!",
-            "ta": "அவுட்டிங் செல்ல அமைதியான பூங்கா, கடற்கரை அல்லது நல்ல திரையரங்கிற்கு சென்று படம் பார்க்கலாம்!",
-            "hi": "शानदार आउटिंग के लिए आप किसी शांत झील या पार्क जा सकते हैं, अच्छे कैफे जा सकते हैं या कोई नई मूवी देख सकते हैं!"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 9. Movies & Entertainment
-    movie_patterns = [
-        "movie", "cinema", "film", "theatre", "series", "netflix", "watching"
-    ]
-    if any(q in text_lower for q in movie_patterns):
-        replies = {
-            "en": "Watching movies is always great fun! Which genre or movie are you planning to watch?",
-            "te": "సినిమా చూడటం చాలా మంచి ఆలోచన! మీరు ఏ సినిమా చూడాలని అనుకుంటున్నారు?",
-            "ta": "திரைப்படம் பார்ப்பது அருமையான பொழுதுபோக்கு! நீங்கள் எந்த படம் பார்க்க விரும்புகிறீர்கள்?",
-            "hi": "मूवी देखना बहुत मजेदार होता है! आप कौन सी मूवी देखने की सोच रहे हैं?"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 10. How can you speak / How do you work
-    speech_tech_patterns = [
-        "how can you speak", "how do you speak", "how do you talk", "how do you work",
-        "how are you speaking", "how do you make sound", "where does your voice come from",
-        "ఎలా మాట్లాడుతున్నారు", "ela matladutunnav", "kaise bol rahi ho"
-    ]
-    if any(q in text_lower for q in speech_tech_patterns):
-        replies = {
-            "en": "I convert text into human-like speech using neural text-to-speech synthesis (TTS) and deep learning acoustic models!",
-            "te": "నేను న్యూరల్ టెక్స్ట్-టు-స్పీచ్ మరియు డీప్ లెర్నింగ్ మోడళ్ల ద్వారా వచనాన్ని సహజమైన మానవ గొంతులోకి మార్చి మాట్లాడుతున్నాను!",
-            "ta": "நான் ஆழ்ந்த கற்றல் மற்றும் நரம்பியல் உரையிலிருந்து பேச்சு தொழில்நுட்பம் மூலம் பேசுகிறேன்!",
-            "hi": "मैं न्यूरल टेक्स्ट-टू-स्पीच और डीप लर्निंग मॉडल का उपयोग करके प्राकृतिक आवाज़ में बोलती हूँ!"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 11. Can you see me / Vision queries
-    vision_patterns = [
-        "can you see me", "can you see", "do you see me", "have eyes", "camera", "can u see me",
-        "నన్ను చూస్తున్నారా", "nannu chustunnava", "dekh sakti ho"
-    ]
-    if any(q in text_lower for q in vision_patterns):
-        replies = {
-            "en": "No, I cannot see you! I don't have eyes or a camera, but I can hear and understand everything you say over the call.",
-            "te": "లేదు, నేను మిమ్మల్ని చూడలేను! నాకు కెమెరా లేదా కళ్ళు లేవు, కానీ మీరు మాట్లాడే ప్రతి మాటను స్పష్టంగా విని అర్థం చేసుకోగలను.",
-            "ta": "இல்லை, என்னால் உங்களை பார்க்க முடியாது! ஆனால் நீங்கள் பேசுவதை தெளிவாக கேட்டு புரிந்து கொள்ள முடிகிறது.",
-            "hi": "नहीं, मैं आपको देख नहीं सकती! मेरे पास आँखें या कैमरा नहीं है, लेकिन मैं आपकी हर बात सुन और समझ सकती हूँ."
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 12. Ideas to improve the voice project
-    improve_patterns = [
-        "improve the project", "ideas to improve", "improve project", "more ideas", "suggestions",
-        "better ideas", "features to add", "voice project ideas", "how to improve",
-        "ప్రాజెక్ట్ ఐడియాస్", "project ideas"
-    ]
-    if any(q in text_lower for q in improve_patterns):
-        replies = {
-            "en": "Here are 4 exciting ways to level up our project: 1. Add WebRTC browser calls so anyone can join from mobile; 2. Preserve speaker emotion and tone during translation; 3. Add background noise cancellation; 4. Integrate WhatsApp voice call bot support!",
-            "te": "మన వాయిస్ ప్రాజెక్ట్‌ను మరింత ఉన్నతంగా మార్చడానికి 4 అద్భుతమైన ఐడియాలు: 1. మొబైల్ బ్రౌజర్ల నుండి కాల్ చేయడానికి WebRTC సపోర్ట్; 2. మాట్లాడే వారి భావోద్వేగాలను ట్రాన్స్‌లేషన్‌లో నిలపడం; 3. బ్యాక్‌గ్రౌండ్ నాయిస్ క్యాన్సిలేషన్; 4. వాట్సాప్ వాయిస్ కాల్స్ ఇంటిగ్రేషన్!",
-            "ta": "நமது திட்டத்தை மேம்படுத்த 4 சிறந்த வழிகள்: 1. ஸ்மார்ட்போனில் பேச WebRTC ஆதரவு; 2. உணர்ச்சிகளுடன் கூடிய குரல் மொழிபெயர்ப்பு; 3. இரைச்சல் நீக்கம்; 4. வாட்ஸ்அப் குரல் அழைப்பு இணைப்பு!",
-            "hi": "प्रोजेक्ट को और बेहतर बनाने के लिए 4 शानदार आइडिया: 1. मोबाइल कॉलिंग के लिए WebRTC सपोर्ट; 2. अनुवाद में भावनाओं और टोन को बनाए रखना; 3. बैकग्राउंड शोर हटाना; 4. व्हाट्सएप वॉयस बॉट इंटीग्रेशन!"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 13. Who made you / Developer
-    creator_patterns = [
-        "who made you", "who created you", "who built you", "developer", "creator", "who developed you",
-        "ఎవరు తయారు చేశారు", "evaru chesaru", "kisne banaya"
-    ]
-    if any(q in text_lower for q in creator_patterns):
-        replies = {
-            "en": "I was built by Uma Surepalli as part of the Multilingual Voice AI project!",
-            "te": "నన్ను ఉమా సురేపల్లి గారు ఈ మల్టీలింగ్వల్ వాయిస్ AI ప్రాజెక్ట్‌లో భాగంగా రూపొందించారు!",
-            "ta": "என்னை உமா சுரேபல்லி அவர்கள் இந்த பன்மொழி குரல் AI திட்டத்தின் கீழ் உருவாக்கினார்!",
-            "hi": "मुझे उमा सुरेपल्ली ने मल्टीलिंगुअल वॉयस AI प्रोजेक्ट के तहत विकसित किया है!"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 14. Languages supported
-    lang_info_patterns = [
-        "languages", "what languages", "other languages", "can you speak telugu", "can you speak hindi"
-    ]
-    if any(q in text_lower for q in lang_info_patterns):
-        replies = {
-            "en": "I support real-time full-duplex translation across more than 100 languages, including English, Telugu, Hindi, Tamil, and more!",
-            "te": "నేను ఇంగ్లీష్, తెలుగు, హిందీ, తమిళం సహా 100 పైగా భాషల్లో రియల్ టైమ్ అనువాదం చేయగలను!",
-            "ta": "நான் ஆங்கிலம், தெலுங்கு, இந்தி, தமிழ் உட்பட 100 க்கும் மேற்பட்ட மொழிகளில் நிகழ்நேர மொழிபெயர்ப்பு செய்ய முடியும்!",
-            "hi": "मैं अंग्रेजी, तेलुगु, हिंदी, तमिल सहित 100 से अधिक भाषाओं में रीयल-टाइम अनुवाद कर सकती हूँ!"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 15. What is your name / Who are you
-    name_patterns = [
-        "who are you", "your name", "what is your name", "who r u",
-        "మీ పేరు", "evaru meeru", "mee peru enti",
-        "உங்கள் பெயர்", "unga peyer enna",
-        "आपका नाम", "aapka naam kya hai"
-    ]
-    if any(q in text_lower for q in name_patterns):
-        replies = {
-            "en": "I am Sarah, your AI call partner conversing with you across languages.",
-            "te": "నేను సారా, మీతో వివిధ భాషల్లో మాట్లాడే మీ AI కాల్ భాగస్వామిని.",
-            "ta": "நான் சாரா, உங்களுடன் பல மொழிகளில் பேசும் உங்கள் AI அழைப்பு கூட்டாளி.",
-            "hi": "मैं सारा हूँ, आपकी AI कॉल पार्टनर जो आपसे विभिन्न भाषाओं में बात करती हूँ."
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 8. Good / Nice / Thank you
-    praise_patterns = [
-        "thank", "thanks", "good", "great", "awesome", "nice", "super", "perfect",
-        "ధన్యవాదాలు", "dhanyavadalu", "chala bagundi",
-        "நன்றி", "nandri", "romba nalla irukku",
-        "धन्यवाद", "shukriya", "bahut achha"
-    ]
-    if any(q in text_lower for q in praise_patterns):
-        replies = {
-            "en": "You're very welcome! It's really exciting to see our speech translation working so smoothly.",
-            "te": "చాలా సంతోషం! మన వాయిస్ ట్రాన్స్‌లేషన్ ఇంత అద్భుతంగా పనిచేయడం చాలా బాగుంది.",
-            "ta": "மிக்க மகிழ்ச்சி! நமது குரல் மொழிபெயர்ப்பு மிகவும் அற்புதமாக செயல்படுகிறது.",
-            "hi": "बहुत-बहुत धन्यवाद! हमारा वॉइस ट्रांसलेशन इतनी अच्छी तरह काम कर रहा है, यह बहुत बढ़िया है."
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 16. Jokes & Humor
-    joke_patterns = ["joke", "jokes", "make me laugh", "funny", "tell me a joke"]
-    if any(q in text_lower for q in joke_patterns):
-        replies = {
-            "en": "Why don't scientists trust atoms? Because they make up everything!",
-            "te": "ఒక చిన్న జోక్: కంప్యూటర్‌కి అత్యంత ఇష్టమైన స్నాక్ ఏంటో తెలుసా? మైక్రోచిప్స్!",
-            "ta": "ஒரு சிறிய நகைச்சுவை: கணிப்பொறிக்கு மிகவும் பிடித்த உணவு எது தெரியுமா? மைக்ரோசிப்ஸ்!",
-            "hi": "एक छोटा सा जोक: वैज्ञानिकों को परमाणुओं पर भरोसा क्यों नहीं होता? क्योंकि वे सब कुछ खुद ही बना लेते हैं!"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 17. Tea, Coffee, Chai
-    tea_patterns = ["tea", "chai", "coffee", "drink tea", "had tea"]
-    if any(q in text_lower for q in tea_patterns):
-        replies = {
-            "en": "A warm cup of tea or coffee always refreshes the spirit! Have you had yours today?",
-            "te": "వేడి వేడి టీ లేదా కాఫీ తాగితే మనసుకి చాలా ఉత్సాహంగా ఉంటుంది! మీరు టీ తాగారా?",
-            "ta": "சூடான டீ அல்லது காபி குடித்தால் மிகவும் புத்துணர்ச்சியாக இருக்கும்! நீங்கள் குடித்தீர்களா?",
-            "hi": "गरमा-गरम चाय या कॉफ़ी पीने से दिन बन जाता है! क्या आपने चाय पी?"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 18. Cooking & Biryani
-    biryani_patterns = ["biryani", "cook", "cooking", "recipe"]
-    if any(q in text_lower for q in biryani_patterns):
-        replies = {
-            "en": "Hyderabadi biryani with aromatic basmati rice and rich spices is simply the best!",
-            "te": "హైదరాబాదీ దమ్ బిర్యానీ సువాసన మరియు రుచే వేరు! బిర్యానీ అంటే అందరికీ చాలా ఇష్టం.",
-            "ta": "சுவையான பிரியாணி எப்போதும் அருமையான உணவு! உங்களுக்கு பிரியாணி பிடிக்குமா?",
-            "hi": "हैदराबादी बिरयानी का स्वाद वाकई लाजवाब होता है! क्या आपको बिरयानी पसंद है?"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 19. Python, Coding & AI
-    code_patterns = ["python", "coding", "programmer", "software", "machine learning", "what is ai"]
-    if any(q in text_lower for q in code_patterns):
-        replies = {
-            "en": "Python is incredible for AI and speech pipelines! We are using Python right now for our real-time voice call translation.",
-            "te": "పైథాన్ ద్వారా శక్తివంతమైన AI ప్రాజెక్టులను రూపొందించవచ్చు! మన వాయిస్ ప్రాజెక్ట్ కూడా పైథాన్‌లోనే నడుస్తోంది.",
-            "ta": "செயற்கை நுண்ணறிவு மற்றும் குரல் மொழிபெயர்ப்புக்கு பைதான் மிகவும் சிறந்தது!",
-            "hi": "पायथन AI और वॉयस प्रोसेसिंग के लिए बहुत शक्तिशाली है! हमारा प्रोजेक्ट भी पायथन पर चल रहा है."
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 20. Cities & Hyderabad
-    city_patterns = ["hyderabad", "bangalore", "delhi", "chennai", "mumbai", "vizag"]
-    if any(q in text_lower for q in city_patterns):
-        replies = {
-            "en": "Hyderabad is a wonderful city, globally known for Charminar, Hi-Tech City, and rich culinary traditions!",
-            "te": "హైదరాబాద్ నగరం, చార్మినార్ మరియు హైటెక్ సిటీ చాలా అందమైనవి మరియు ప్రసిద్ధి చెందినవి!",
-            "ta": "ஹைதராபாத் மிகவும் அழகான வரலாற்று சிறப்புமிக்க நகரம்!",
-            "hi": "हैदराबाद चारमीनार, हाई-टेक सिटी और अपनी संस्कृति के लिए बहुत मशहूर है!"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 21. Music & Songs
-    music_patterns = ["song", "music", "sing", "singer", "listen to music"]
-    if any(q in text_lower for q in music_patterns):
-        replies = {
-            "en": "Listening to soulful music is wonderful for relaxation! What genre of music do you enjoy?",
-            "te": "మంచి సంగీతం వినడం మనసుకు ఎంతో ప్రశాంతతను ఇస్తుంది! మీకు ఏ పాటలు అంటే ఇష్టం?",
-            "ta": "இனிய இசை கேட்பது மனதிற்கு மிகவும் அமைதியை தரும்! உங்களுக்கு என்ன பாடல் பிடிக்கும்?",
-            "hi": "अच्छा संगीत सुनना मन को बहुत शांति देता है! आपका पसंदीदा गाना कौन सा है?"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 22. Goodbyes
-    bye_patterns = [
-        "bye", "goodbye", "see you", "talk to you later", "good night", "tata",
-        "టాటా", "వెళ్ళొస్తాను", "vellostanu",
-        "போய் வருகிறேன்", "poyitu varen",
-        "अलविदा", "shubh ratri", "phir milenge"
-    ]
-    if any(q in text_lower for q in bye_patterns):
-        replies = {
-            "en": "Goodbye! It was wonderful speaking with you. Have a great day ahead!",
-            "te": "సరే ఉంటాను! మీతో మాట్లాడటం చాలా ఆనందంగా ఉంది. మంచి రోజు కావాలని కోరుకుంటున్నాను!",
-            "ta": "போய் வருகிறேன்! உங்களுடன் பேசியதில் மகிழ்ச்சி. நல்ல நாளாக அமையட்டும்!",
-            "hi": "अलविदा! आपसे बात करके बहुत ख़ुशी हुई. आपका दिन शुभ हो!"
-        }
-        return replies.get(reply_lang, replies["en"])
-
-    # 10. Natural Dynamic Fallback (cycles through varied realistic replies)
-    fallback_pool = {
-        "en": [
-            "That's really interesting! Tell me more about that.",
-            "Got it! How is everything else going with you today?",
-            "That sounds great! I completely agree with you.",
-            "I hear you! It's really wonderful chatting with you like this.",
-            "Nice! What else is on your mind?"
-        ],
-        "te": [
-            "చాలా ఆసక్తికరంగా ఉంది! దీని గురించి మరికొంత చెప్పండి.",
-            "అర్థమైంది! ఈ రోజు మీ పనులన్నీ ఎలా సాగుతున్నాయి?",
-            "అవును, అది నిజమే! నేను మీతో పూర్తిగా ఏకీభవిస్తున్నాను.",
-            "మీతో ఇలా మాట్లాడటం చాలా సంతోషంగా ఉంది.",
-            "బాగుంది! ఇంకా ఏమైనా విశేషాలు ఉన్నాయా?"
-        ],
-        "ta": [
-            "மிகவும் சுவாரஸ்யமாக இருக்கிறது! இதைப் பற்றி மேலும் சொல்லுங்கள்.",
-            "புரிந்தது! இன்று மற்ற வேலைகள் எப்படி போகின்றன?",
-            "நிச்சயமாக, அது புரிகிறது! நான் உங்களுடன் உடன்படுகிறேன்.",
-            "உங்களுடன் இப்படி பேசுவது மகிழ்ச்சியாக இருக்கிறது."
-        ],
-        "hi": [
-            "यह बहुत दिलचस्प है! इसके बारे में और बताइए.",
-            "समझ गया! आज का बाकी दिन आपका कैसा चल रहा है?",
-            "बिल्कुल सही! मैं आपकी बात से पूरी तरह सहमत हूँ.",
-            "आपसे इस तरह बात करके बहुत अच्छा लग रहा है."
-        ]
-    }
-    lang_pool = fallback_pool.get(reply_lang, fallback_pool["en"])
-    reply = lang_pool[_FALLBACK_INDEX % len(lang_pool)]
-    _FALLBACK_INDEX += 1
-    return reply
+    service = get_dialogue_service(gemini_key=gemini_key, user_name=user_name, partner_name=partner_name)
+    return service.generate_reply(user_text, reply_lang=reply_lang)
 
 
 def print_banner(a_name, a_lang, b_name, b_lang, input_device_name, output_device_name, llm_active: bool = False):
@@ -460,7 +70,7 @@ def print_banner(a_name, a_lang, b_name, b_lang, input_device_name, output_devic
     print(f"  🎙️ Microphone (Input)     : {input_device_name}")
     print(f"  🔊 Sound Playback (Output) : {output_device_name}")
     print(f"  🔒 Feedback Suppression   : ACTIVE (Microphone auto-mutes during AI speech)")
-    brain_info = "⚡ Google Gemini LLM (Open-Ended Reasoning for ANY Question)" if llm_active else "🛡️ Smart Offline Knowledge Engine (Privacy / Zero-Cloud)"
+    brain_info = "⚡ Google Gemini LLM (Cloud Generative Intelligence)" if llm_active else "🤖 Qwen2.5-0.5B-Instruct Neural SLM (100% Dynamic On-Device Model)"
     print(f"  🧠 Conversational Brain   : {brain_info}")
     print(f"  • When you speak as {a_name}:")
     print(f"    1. System transcribes what you said.")
@@ -505,6 +115,12 @@ def main():
     asr_service = StreamingAsrService(model_size="base", shared_model=shared_whisper)
     translation = TranslationService()
     tts = StreamingTtsService()
+
+    # Pre-initialize dynamic dialogue service
+    dialogue_service = get_dialogue_service(gemini_key=args.gemini_key, user_name=name_a, partner_name=name_b)
+    if not (args.gemini_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        print("🧠 Pre-loading local dynamic dialogue model (Qwen2.5-0.5B-Instruct on CPU)...")
+        dialogue_service.load_local_engine()
 
     streamer = LiveAudioStreamer(
         device_index=args.device,
@@ -604,7 +220,13 @@ def main():
         print("   " + "-" * 72)
 
         # Step 3: Call Partner (Sarah) Contextual Response
-        reply_in_b_lang = generate_call_partner_reply(spoken_text, reply_lang=lang_b, gemini_key=args.gemini_key)
+        reply_in_b_lang = generate_call_partner_reply(
+            spoken_text,
+            reply_lang=lang_b,
+            gemini_key=args.gemini_key,
+            user_name=name_a,
+            partner_name=name_b
+        )
 
         # Translate reply to A's language (if different)
         if lang_a == lang_b:
@@ -667,7 +289,13 @@ def main():
                 print(f"   🌐 Delivered to {name_b}: \"{trans_for_b}\"")
 
                 # B's contextual reply
-                reply_in_b = generate_call_partner_reply(user_msg, reply_lang=lang_b, gemini_key=args.gemini_key)
+                reply_in_b = generate_call_partner_reply(
+                    user_msg,
+                    reply_lang=lang_b,
+                    gemini_key=args.gemini_key,
+                    user_name=name_a,
+                    partner_name=name_b
+                )
                 if lang_a == lang_b:
                     reply_for_a = reply_in_b
                 else:
