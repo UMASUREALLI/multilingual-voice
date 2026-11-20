@@ -186,7 +186,78 @@ def generate_call_partner_reply(user_text: str, reply_lang: str = "en") -> str:
         }
         return replies.get(reply_lang, replies["en"])
 
-    # 10. What is your name / Who are you
+    # 10. How can you speak / How do you work
+    speech_tech_patterns = [
+        "how can you speak", "how do you speak", "how do you talk", "how do you work",
+        "how are you speaking", "how do you make sound", "where does your voice come from",
+        "ఎలా మాట్లాడుతున్నారు", "ela matladutunnav", "kaise bol rahi ho"
+    ]
+    if any(q in text_lower for q in speech_tech_patterns):
+        replies = {
+            "en": "I convert text into human-like speech using neural text-to-speech synthesis (TTS) and deep learning acoustic models!",
+            "te": "నేను న్యూరల్ టెక్స్ట్-టు-స్పీచ్ మరియు డీప్ లెర్నింగ్ మోడళ్ల ద్వారా వచనాన్ని సహజమైన మానవ గొంతులోకి మార్చి మాట్లాడుతున్నాను!",
+            "ta": "நான் ஆழ்ந்த கற்றல் மற்றும் நரம்பியல் உரையிலிருந்து பேச்சு தொழில்நுட்பம் மூலம் பேசுகிறேன்!",
+            "hi": "मैं न्यूरल टेक्स्ट-टू-स्पीच और डीप लर्निंग मॉडल का उपयोग करके प्राकृतिक आवाज़ में बोलती हूँ!"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 11. Can you see me / Vision queries
+    vision_patterns = [
+        "can you see me", "can you see", "do you see me", "have eyes", "camera", "can u see me",
+        "నన్ను చూస్తున్నారా", "nannu chustunnava", "dekh sakti ho"
+    ]
+    if any(q in text_lower for q in vision_patterns):
+        replies = {
+            "en": "No, I cannot see you! I don't have eyes or a camera, but I can hear and understand everything you say over the call.",
+            "te": "లేదు, నేను మిమ్మల్ని చూడలేను! నాకు కెమెరా లేదా కళ్ళు లేవు, కానీ మీరు మాట్లాడే ప్రతి మాటను స్పష్టంగా విని అర్థం చేసుకోగలను.",
+            "ta": "இல்லை, என்னால் உங்களை பார்க்க முடியாது! ஆனால் நீங்கள் பேசுவதை தெளிவாக கேட்டு புரிந்து கொள்ள முடிகிறது.",
+            "hi": "नहीं, मैं आपको देख नहीं सकती! मेरे पास आँखें या कैमरा नहीं है, लेकिन मैं आपकी हर बात सुन और समझ सकती हूँ."
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 12. Ideas to improve the voice project
+    improve_patterns = [
+        "improve the project", "ideas to improve", "improve project", "more ideas", "suggestions",
+        "better ideas", "features to add", "voice project ideas", "how to improve",
+        "ప్రాజెక్ట్ ఐడియాస్", "project ideas"
+    ]
+    if any(q in text_lower for q in improve_patterns):
+        replies = {
+            "en": "Here are 4 exciting ways to level up our project: 1. Add WebRTC browser calls so anyone can join from mobile; 2. Preserve speaker emotion and tone during translation; 3. Add background noise cancellation; 4. Integrate WhatsApp voice call bot support!",
+            "te": "మన వాయిస్ ప్రాజెక్ట్‌ను మరింత ఉన్నతంగా మార్చడానికి 4 అద్భుతమైన ఐడియాలు: 1. మొబైల్ బ్రౌజర్ల నుండి కాల్ చేయడానికి WebRTC సపోర్ట్; 2. మాట్లాడే వారి భావోద్వేగాలను ట్రాన్స్‌లేషన్‌లో నిలపడం; 3. బ్యాక్‌గ్రౌండ్ నాయిస్ క్యాన్సిలేషన్; 4. వాట్సాప్ వాయిస్ కాల్స్ ఇంటిగ్రేషన్!",
+            "ta": "நமது திட்டத்தை மேம்படுத்த 4 சிறந்த வழிகள்: 1. ஸ்மார்ட்போனில் பேச WebRTC ஆதரவு; 2. உணர்ச்சிகளுடன் கூடிய குரல் மொழிபெயர்ப்பு; 3. இரைச்சல் நீக்கம்; 4. வாட்ஸ்அப் குரல் அழைப்பு இணைப்பு!",
+            "hi": "प्रोजेक्ट को और बेहतर बनाने के लिए 4 शानदार आइडिया: 1. मोबाइल कॉलिंग के लिए WebRTC सपोर्ट; 2. अनुवाद में भावनाओं और टोन को बनाए रखना; 3. बैकग्राउंड शोर हटाना; 4. व्हाट्सएप वॉयस बॉट इंटीग्रेशन!"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 13. Who made you / Developer
+    creator_patterns = [
+        "who made you", "who created you", "who built you", "developer", "creator", "who developed you",
+        "ఎవరు తయారు చేశారు", "evaru chesaru", "kisne banaya"
+    ]
+    if any(q in text_lower for q in creator_patterns):
+        replies = {
+            "en": "I was built by Uma Surepalli as part of the Multilingual Voice AI project!",
+            "te": "నన్ను ఉమా సురేపల్లి గారు ఈ మల్టీలింగ్వల్ వాయిస్ AI ప్రాజెక్ట్‌లో భాగంగా రూపొందించారు!",
+            "ta": "என்னை உமா சுரேபல்லி அவர்கள் இந்த பன்மொழி குரல் AI திட்டத்தின் கீழ் உருவாக்கினார்!",
+            "hi": "मुझे उमा सुरेपल्ली ने मल्टीलिंगुअल वॉयस AI प्रोजेक्ट के तहत विकसित किया है!"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 14. Languages supported
+    lang_info_patterns = [
+        "languages", "what languages", "other languages", "can you speak telugu", "can you speak hindi"
+    ]
+    if any(q in text_lower for q in lang_info_patterns):
+        replies = {
+            "en": "I support real-time full-duplex translation across more than 100 languages, including English, Telugu, Hindi, Tamil, and more!",
+            "te": "నేను ఇంగ్లీష్, తెలుగు, హిందీ, తమిళం సహా 100 పైగా భాషల్లో రియల్ టైమ్ అనువాదం చేయగలను!",
+            "ta": "நான் ஆங்கிலம், தெலுங்கு, இந்தி, தமிழ் உட்பட 100 க்கும் மேற்பட்ட மொழிகளில் நிகழ்நேர மொழிபெயர்ப்பு செய்ய முடியும்!",
+            "hi": "मैं अंग्रेजी, तेलुगु, हिंदी, तमिल सहित 100 से अधिक भाषाओं में रीयल-टाइम अनुवाद कर सकती हूँ!"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 15. What is your name / Who are you
     name_patterns = [
         "who are you", "your name", "what is your name", "who r u",
         "మీ పేరు", "evaru meeru", "mee peru enti",
