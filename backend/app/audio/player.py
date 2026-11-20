@@ -24,13 +24,53 @@ class AudioPlaybackEngine:
     and supports instant barge-in cancellation.
     """
 
-    def __init__(self, device_index: Optional[int] = None):
+    def __init__(self, device_index: Optional[int] = None, input_device_index: Optional[int] = None):
+        if device_index is None and input_device_index is not None:
+            device_index = self.auto_detect_output_device(input_device_index)
         self.device_index = device_index
         self._is_playing = threading.Event()
         self._stop_requested = threading.Event()
         self._play_queue: queue.Queue = queue.Queue()
         self._worker_thread: Optional[threading.Thread] = None
         self._running = False
+
+    @staticmethod
+    def auto_detect_output_device(input_device_index: Optional[int] = None) -> Optional[int]:
+        """
+        Intelligently determines the correct audio output device.
+        On Windows, if a Bluetooth headset's microphone is active (HFP mode),
+        output MUST be routed to the matching Hands-Free output profile,
+        otherwise the Windows Bluetooth driver will discard stereo audio.
+        """
+        try:
+            device_list = sd.query_devices()
+            if input_device_index is not None and input_device_index >= 0:
+                in_dev = device_list[input_device_index]
+                in_name = in_dev.get("name", "").lower()
+                keywords = ["buds", "headset", "airpods", "wireless", "bluetooth", "t310", "oneplus", "boat", "noise", "realme"]
+                if any(kw in in_name for kw in keywords):
+                    for idx, dev in enumerate(device_list):
+                        if dev.get("max_output_channels", 0) > 0:
+                            dev_name = dev.get("name", "").lower()
+                            if ("headset" in dev_name or "hands" in dev_name) and any(kw in dev_name for kw in keywords):
+                                return idx
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def get_laptop_speakers() -> Optional[int]:
+        """Find the laptop built-in physical speakers."""
+        try:
+            device_list = sd.query_devices()
+            for idx, dev in enumerate(device_list):
+                if dev.get("max_output_channels", 0) > 0:
+                    name = dev.get("name", "").lower()
+                    if "speakers" in name and "bluetooth" not in name and "headset" not in name:
+                        return idx
+        except Exception:
+            pass
+        return None
 
         # State callbacks for Acoustic Echo Feedback Prevention
         self._on_playback_start_callbacks: List[Callable[[], None]] = []

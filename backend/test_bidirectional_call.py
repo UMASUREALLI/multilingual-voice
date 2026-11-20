@@ -119,18 +119,19 @@ def generate_call_partner_reply(user_text: str, reply_lang: str = "en") -> str:
         return replies.get(reply_lang, replies["en"])
 
 
-def print_banner(a_name, a_lang, b_name, b_lang, input_device_name):
+def print_banner(a_name, a_lang, b_name, b_lang, input_device_name, output_device_name):
     print("\n" + "=" * 76)
     print("  BIDIRECTIONAL MULTILINGUAL VOICE CALL (LIVE CONVERSATION PARTNER)")
     print(f"  Party A: {a_name} ({a_lang.upper()})  <== FULL-DUPLEX ==>  Party B: {b_name} ({b_lang.upper()})")
     print("=" * 76)
-    print(f"  • Microphone Input Device : {input_device_name}")
-    print(f"  • Feedback Suppression    : ACTIVE (Microphone auto-mutes during AI speech)")
+    print(f"  🎙️ Microphone (Input)     : {input_device_name}")
+    print(f"  🔊 Sound Playback (Output) : {output_device_name}")
+    print(f"  🔒 Feedback Suppression   : ACTIVE (Microphone auto-mutes during AI speech)")
     print(f"  • When you speak as {a_name}:")
     print(f"    1. System transcribes what you said.")
     print(f"    2. Translates it for {b_name} into {b_lang.upper()}.")
     print(f"    3. {b_name} replies contextually in {b_lang.upper()}.")
-    print(f"    4. Translated back to {a_lang.upper()} and SPOKEN ALOUD through your earphones!")
+    print(f"    4. Translated back to {a_lang.upper()} and SPOKEN ALOUD to you!")
     print("=" * 76 + "\n")
 
 
@@ -143,6 +144,8 @@ def main():
     parser.add_argument("--gender-a", type=str, default="female", choices=["female", "male"], help="Speaker A voice gender")
     parser.add_argument("--gender-b", type=str, default="female", choices=["female", "male"], help="Speaker B voice gender")
     parser.add_argument("--device", type=int, default=None, help="Microphone input device index (default: auto-detected)")
+    parser.add_argument("--out-device", type=int, default=None, help="Audio output device index (default: auto-detected matching output)")
+    parser.add_argument("--speaker", action="store_true", help="Force sound output through laptop physical speakers instead of earphones")
     parser.add_argument("--duration", type=float, default=None, help="Call duration limit in seconds (default: runs indefinitely until Ctrl+C)")
     parser.add_argument("--text", action="store_true", help="Interactive keyboard text mode (type instead of speaking)")
     args = parser.parse_args()
@@ -166,7 +169,6 @@ def main():
     asr_service = StreamingAsrService(model_size="base", shared_model=shared_whisper)
     translation = TranslationService()
     tts = StreamingTtsService()
-    player = AudioPlaybackEngine()
 
     streamer = LiveAudioStreamer(
         device_index=args.device,
@@ -177,7 +179,44 @@ def main():
         max_speech_ms=9000
     )
 
-    # Resolve active microphone name for UI
+    # Determine optimal output device
+    if args.speaker:
+        out_idx = AudioPlaybackEngine.get_laptop_speakers()
+    elif args.out_device is not None:
+        out_idx = args.out_device
+    else:
+        out_idx = AudioPlaybackEngine.auto_detect_output_device(streamer.device_index)
+
+    player = AudioPlaybackEngine(device_index=out_idx)
+
+    # Resolve active device names for UI display
+    in_name = "Default Microphone"
+    out_name = "Default Speakers"
+    try:
+        active_in = streamer.device_index if streamer.device_index is not None else sd.default.device[0]
+        in_info = sd.query_devices(active_in)
+        in_name = f"[{active_in}] {in_info.get('name')}"
+    except Exception:
+        pass
+    try:
+        active_out = player.device_index if player.device_index is not None else sd.default.device[1]
+        out_info = sd.query_devices(active_out)
+        out_name = f"[{active_out}] {out_info.get('name')}"
+    except Exception:
+        pass
+
+    print_banner(name_a, lang_a, name_b, lang_b, in_name, out_name)
+
+    # Echo feedback prevention
+    link_playback_to_streamer(player, streamer, duck_only=False)
+
+    # Startup gentle chime to confirm playback is active
+    try:
+        t_arr = np.linspace(0, 0.35, int(24000 * 0.35), endpoint=False)
+        chime = (0.20 * np.sin(2 * np.pi * 523.25 * t_arr) * np.exp(-t_arr * 6)).astype(np.float32)
+        player.play(chime, sample_rate=24000, blocking=True)
+    except Exception:
+        pass
     dev_name = "Default Microphone"
     try:
         active_idx = streamer.device_index if streamer.device_index is not None else sd.default.device[0]
