@@ -94,10 +94,10 @@ def main():
     # 3. Setup Hardware Microphone Streamer & Echo Loop Safety Switch
     print("[3/4] Linking Acoustic Echo Prevention Safety Switch...")
     streamer = LiveAudioStreamer(
-        vad_start_threshold=0.50,
-        vad_end_threshold=0.35,
+        vad_start_threshold=0.35,
+        vad_end_threshold=0.25,
         hangover_ms=1100,
-        min_speech_ms=450,
+        min_speech_ms=300,
         max_speech_ms=9000
     )
 

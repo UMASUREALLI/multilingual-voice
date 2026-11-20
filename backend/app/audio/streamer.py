@@ -38,6 +38,8 @@ class LiveAudioStreamer:
         preroll_ms: int = 350,
         buffer_capacity_sec: float = 30.0
     ):
+        if device_index is None:
+            device_index = self.auto_detect_input_device()
         self.device_index = device_index
         self._running = False
         self._paused = False
@@ -91,6 +93,31 @@ class LiveAudioStreamer:
         except Exception as e:
             print(f"Error querying audio devices: {e}", file=sys.stderr)
         return devices
+
+    @staticmethod
+    def auto_detect_input_device() -> Optional[int]:
+        """
+        Intelligently detects the best audio input device.
+        If a headset or earbuds (e.g., realme Buds, AirPods, Bluetooth Headset)
+        is the active output, automatically pairs with that headset's input mic
+        instead of defaulting to the distant laptop mic.
+        """
+        try:
+            device_list = sd.query_devices()
+            def_out_idx = sd.default.device[1]
+            if def_out_idx is not None and def_out_idx >= 0:
+                out_name = device_list[def_out_idx].get("name", "").lower()
+                keywords = ["buds", "headset", "airpods", "wireless", "bluetooth", "t310", "oneplus", "boat", "noise", "realme"]
+                for kw in keywords:
+                    if kw in out_name:
+                        for idx, dev in enumerate(device_list):
+                            if dev.get("max_input_channels", 0) > 0:
+                                in_name = dev.get("name", "").lower()
+                                if kw in in_name:
+                                    return idx
+        except Exception:
+            pass
+        return None
 
     def register_on_frame(self, cb: Callable[[np.ndarray, float, float, SpeechEventType], None]) -> None:
         """Register callback for every 32ms audio frame: cb(audio_frame, rms_dbfs, speech_prob, event_type)."""

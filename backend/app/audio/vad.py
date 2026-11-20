@@ -61,8 +61,8 @@ class StreamingSileroVAD:
 
     def __init__(
         self,
-        start_threshold: float = 0.45,
-        end_threshold: float = 0.30,
+        start_threshold: float = 0.35,
+        end_threshold: float = 0.25,
         hangover_ms: int = 450,
         min_speech_ms: int = 250,
         max_speech_ms: int = 8000,

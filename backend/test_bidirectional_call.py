@@ -1,19 +1,16 @@
 """
-Full-Duplex Bidirectional Two-Speaker Call Simulator with Voice Cloning.
-Simulates a real-time call between two speakers of different native languages:
-Example: Speaker A speaks Telugu <-> Speaker B speaks Tamil.
+Interactive Bidirectional Multilingual Voice Call Simulator with AI Call Partner.
+Simulates a real-time call between two speakers across different languages:
+Example:
+  Uma (English) <== FULL-DUPLEX TRANSLATION CALL ==> Sarah (Telugu)
 
-Turn 1: Speaker A speaks Telugu
-  -> System auto-identifies Telugu
-  -> Translates Telugu -> Tamil for Speaker B
-  -> Synthesizes Tamil speech in Speaker A's CLONED voice
-  -> Speaker B hears Tamil spoken in Speaker A's voice!
-
-Turn 2: Speaker B speaks Tamil
-  -> System auto-identifies Tamil
-  -> Translates Tamil -> Telugu for Speaker A
-  -> Synthesizes Telugu speech in Speaker B's CLONED voice
-  -> Speaker A hears Telugu spoken in Speaker B's voice!
+Turn 1: Uma speaks into microphone: "Hi, how are you?"
+  -> System captures audio via realme Buds / default mic
+  -> Transcribes: "Hi, how are you"
+  -> Translates for Sarah: "హలో, మీరు ఎలా ఉన్నారు?"
+  -> Sarah (AI Call Partner) contextually responds: "నేను బాగున్నాను! మీరు ఎలా ఉన్నారు?"
+  -> Translated for Uma: "Hey, I'm good! What about you?"
+  -> Speaks Sarah's reply aloud through your earbuds/speakers in natural neural voice!
 
 Zero disk writes. Real-time VAD, LID, ASR, NMT, TTS, and acoustic feedback protection.
 """
@@ -22,11 +19,12 @@ import sys
 import time
 import argparse
 import numpy as np
+import sounddevice as sd
 
 from app.audio.streamer import LiveAudioStreamer
 from app.audio.vad import SpeechSegment
 from app.audio.player import AudioPlaybackEngine, link_playback_to_streamer
-from app.services.lid_service import LanguageDetectionEngine
+from app.services.lid_service import LanguageDetectionEngine, DynamicLanguageTracker
 from app.services.asr_service import StreamingAsrService
 from app.services.translation_service import TranslationService
 from app.services.tts_service import StreamingTtsService
@@ -34,70 +32,135 @@ from app.services.voice_cloner import VoiceCloningService
 from app.models.language import SUPPORTED_LANGUAGES, LanguageInfo, normalize_language_code
 
 
-def print_banner(a_name, a_lang, b_name, b_lang):
+def generate_call_partner_reply(user_text: str, reply_lang: str = "en") -> str:
+    """
+    Intelligent conversational call partner response generator.
+    Replies contextually to greetings, questions, status checks, and chit-chat.
+    """
+    text_lower = user_text.lower().strip()
+
+    # 1. Greetings & "How are you"
+    if any(q in text_lower for q in ["how are you", "how r u", "how do you do", "బాగున్నారా", "ఎలా ఉన్నారు", "எப்படி இருக்கிறீர்கள்", "हालचाल"]):
+        replies = {
+            "en": "Hey, I'm good! What about you?",
+            "te": "హలో, నేను బాగున్నాను! మీరు ఎలా ఉన్నారు?",
+            "ta": "வணக்கம், நான் நன்றாக இருக்கிறேன்! நீங்கள் எப்படி இருக்கிறீர்கள்?",
+            "hi": "नमस्ते, मैं बहुत अच्छा हूँ! आप कैसे हैं?"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    elif any(q in text_lower for q in ["hi", "hello", "hey", "నమస్కారం", "வணக்கம்", "नमस्ते"]):
+        replies = {
+            "en": "Hello! Great to hear from you. How are you doing today?",
+            "te": "నమస్కారం! మీతో మాట్లాడటం ఆనందంగా ఉంది. ఎలా ఉన్నారు?",
+            "ta": "வணக்கம்! உங்களுடன் பேசுவதில் மகிழ்ச்சி. இன்று எப்படி இருக்கிறீர்கள்?",
+            "hi": "नमस्ते! आपसे बात करके अच्छा लगा. आज आप कैसे हैं?"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 2. Can you hear me / audio check
+    elif any(q in text_lower for q in ["can you hear me", "hear me", "speaking to you", "వినిపిస్తుందా", "కేట్கிறதா", "सुन पा रहे"]):
+        replies = {
+            "en": "Yes, I can hear you loud and clear! The voice translation is working seamlessly.",
+            "te": "అవును, మీ మాటలు చాలా స్పష్టంగా వినిపిస్తున్నాయి! అనువాదం చాలా బాగా పనిచేస్తోంది.",
+            "ta": "ஆம், நீங்கள் பேசுவது தெளிவாக கேட்கிறது! மொழிபெயர்ப்பு நன்றாக செயல்படுகிறது.",
+            "hi": "हाँ, मैं आपको बिल्कुल साफ़ सुन सकता हूँ! ट्रांसलेशन बहुत अच्छा काम कर रहा है."
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 3. What are you doing / Project queries
+    elif any(q in text_lower for q in ["what are you doing", "what project", "about project", "ఏం చేస్తున్నారు", "என்ன செய்கிறீர்கள்", "क्या कर रहे"]):
+        replies = {
+            "en": "I'm testing our real-time voice call translation system with you right now!",
+            "te": "మనం ప్రస్తుతం రియల్ టైమ్ వాయిస్ కాల్ అనువాద వ్యవస్థను పరీక్షిస్తున్నాము!",
+            "ta": "நாம் இப்போது நிகழ்நேர குரல் அழைப்பு மொழிபெயர்ப்பு அமைப்பை சோதிக்கிறோம்!",
+            "hi": "हम अभी हमारे रीयल-टाइम वॉयस कॉल ट्रांसलेशन सिस्टम का परीक्षण कर रहे हैं!"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 4. What is your name / Who are you
+    elif any(q in text_lower for q in ["who are you", "your name", "మీ పేరు", "உங்கள் பெயர்", "आपका नाम"]):
+        replies = {
+            "en": "I am your AI call partner, conversing with you across languages.",
+            "te": "నేను మీ AI కాల్ భాగస్వామిని, మీతో మాట్లాడటానికి ఇక్కడ ఉన్నాను.",
+            "ta": "நான் உங்கள் AI அழைப்பு கூட்டாளி, உங்களுடன் பேச வந்துள்ளேன்.",
+            "hi": "मैं आपका AI कॉल पार्टनर हूँ, आपसे रीयल-टाइम में बात कर रहा हूँ."
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 5. Good / Nice / Thank you
+    elif any(q in text_lower for q in ["thank", "thanks", "good", "great", "awesome", "ధన్యవాదాలు", "நன்றி", "धन्यवाद"]):
+        replies = {
+            "en": "You're very welcome! It's really exciting to see this working so smoothly.",
+            "te": "చాలా సంతోషం! ఇది ఇంత అద్భుతంగా పనిచేయడం చాలా బాగుంది.",
+            "ta": "மிக்க மகிழ்ச்சி! இது மிகவும் அற்புதமாக செயல்படுகிறது.",
+            "hi": "बहुत-बहुत धन्यवाद! यह सब इतनी अच्छी तरह से काम कर रहा है, यह बहुत बढ़िया है."
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 6. Goodbyes
+    elif any(q in text_lower for q in ["bye", "goodbye", "see you", "టాటా", "వెళ్ళొస్తాను", "போய் வருகிறேன்", "अलविदा"]):
+        replies = {
+            "en": "Goodbye! It was great speaking with you. Have a wonderful day ahead!",
+            "te": "సరే ఉంటాను! మీతో మాట్లాడటం చాలా ఆనందంగా ఉంది. మంచి రోజు కావాలని కోరుకుంటున్నాను!",
+            "ta": "போய் வருகிறேன்! உங்களுடன் பேசியதில் மகிழ்ச்சி. நல்ல நாளாக அமையட்டும்!",
+            "hi": "अलविदा! आपसे बात करके बहुत ख़ुशी हुई. आपका दिन शुभ हो!"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 7. General conversational reply
+    else:
+        replies = {
+            "en": "That sounds great! I completely agree with you.",
+            "te": "అవును, అది నిజమే! నేను మీతో పూర్తిగా ఏకీభవిస్తున్నాను.",
+            "ta": "நிச்சயமாக, அது புரிகிறது! நான் உங்களுடன் உடன்படுகிறேன்.",
+            "hi": "बिल्कुल सही! मैं आपकी बात से पूरी तरह सहमत हूँ."
+        }
+        return replies.get(reply_lang, replies["en"])
+
+
+def print_banner(a_name, a_lang, b_name, b_lang, input_device_name):
     print("\n" + "=" * 76)
-    print("  BIDIRECTIONAL MULTILINGUAL VOICE CALL (SPEAKER A <-> SPEAKER B)")
+    print("  BIDIRECTIONAL MULTILINGUAL VOICE CALL (LIVE CONVERSATION PARTNER)")
     print(f"  Party A: {a_name} ({a_lang.upper()})  <== FULL-DUPLEX ==>  Party B: {b_name} ({b_lang.upper()})")
     print("=" * 76)
-    print("  • When Speaker A speaks in their language:")
-    print(f"    -> Translated to {b_lang.upper()} using Speaker A's CLONED voice for Speaker B.")
-    print("  • When Speaker B speaks in their language:")
-    print(f"    -> Translated to {a_lang.upper()} using Speaker B's CLONED voice for Speaker A.")
+    print(f"  • Microphone Input Device : {input_device_name}")
+    print(f"  • Feedback Suppression    : ACTIVE (Microphone auto-mutes during AI speech)")
+    print(f"  • When you speak as {a_name}:")
+    print(f"    1. System transcribes what you said.")
+    print(f"    2. Translates it for {b_name} into {b_lang.upper()}.")
+    print(f"    3. {b_name} replies contextually in {b_lang.upper()}.")
+    print(f"    4. Translated back to {a_lang.upper()} and SPOKEN ALOUD through your earphones!")
     print("=" * 76 + "\n")
-
-
-# Canned realistic responses for auto-reply simulation when testing with a single user
-AUTO_REPLIES = {
-    "ta": [
-        "வணக்கம்! நான் நன்றாக இருக்கிறேன், நீங்கள் எப்படி இருக்கிறீர்கள்?",
-        "திட்டப்பணி மிகவும் சிறப்பாக முன்னேறி வருகிறது.",
-        "நிச்சயமாக, நாம் நாளை காலை பேசலாம்."
-    ],
-    "te": [
-        "నమస్కారం! నేను బాగున్నాను, మీరు ఎలా ఉన్నారు?",
-        "ప్రాజెక్ట్ పని చాలా బాగా జరుగుతోంది.",
-        "ఖచ్చితంగా, మనం రేపు ఉదయం మాట్లాడదాం."
-    ],
-    "hi": [
-        "नमस्ते! मैं बहुत अच्छा हूँ, आप कैसे हैं?",
-        "प्रोजेक्ट का काम बहुत तेजी से चल रहा है.",
-        "ज़रूर, हम कल सुबह इस पर चर्चा करेंगे."
-    ],
-    "en": [
-        "Hello! I am doing great, how about you?",
-        "The project is progressing very well.",
-        "Sure, let us schedule the follow-up meeting for tomorrow."
-    ]
-}
 
 
 def main():
     parser = argparse.ArgumentParser(description="Bidirectional Two-Speaker Call Simulator")
-    parser.add_argument("--party-a", type=str, default="te", help="Speaker A language (default: te / Telugu)")
-    parser.add_argument("--party-b", type=str, default="ta", help="Speaker B language (default: ta / Tamil)")
-    parser.add_argument("--gender-a", type=str, default="male", choices=["male", "female"], help="Speaker A gender")
-    parser.add_argument("--gender-b", type=str, default="female", choices=["female", "male"], help="Speaker B gender")
-    parser.add_argument("--auto-reply", action="store_true", default=True, help="Automatically simulate recipient reply")
-    parser.add_argument("--no-auto-reply", dest="auto_reply", action="store_false", help="Disable auto-reply (user speaks both languages)")
-    parser.add_argument("--pitch-a", type=str, default="+2Hz", help="Speaker A pitch modulation (voice clone)")
-    parser.add_argument("--pitch-b", type=str, default="-3Hz", help="Speaker B pitch modulation (voice clone)")
+    parser.add_argument("--party-a", type=str, default="en", help="Speaker A language (default: en / English)")
+    parser.add_argument("--party-b", type=str, default="te", help="Speaker B language (default: te / Telugu)")
+    parser.add_argument("--name-a", type=str, default="Uma", help="Speaker A name (default: Uma)")
+    parser.add_argument("--name-b", type=str, default="Sarah", help="Speaker B name (default: Sarah)")
+    parser.add_argument("--gender-a", type=str, default="female", choices=["female", "male"], help="Speaker A voice gender")
+    parser.add_argument("--gender-b", type=str, default="female", choices=["female", "male"], help="Speaker B voice gender")
+    parser.add_argument("--device", type=int, default=None, help="Microphone input device index (default: auto-detected)")
+    parser.add_argument("--duration", type=float, default=None, help="Call duration limit in seconds (default: runs indefinitely until Ctrl+C)")
+    parser.add_argument("--text", action="store_true", help="Interactive keyboard text mode (type instead of speaking)")
     args = parser.parse_args()
 
-    lang_a = normalize_language_code(args.party_a, default="te")
-    lang_b = normalize_language_code(args.party_b, default="ta")
+    lang_a = normalize_language_code(args.party_a, default="en")
+    lang_b = normalize_language_code(args.party_b, default="te")
 
     info_a = SUPPORTED_LANGUAGES.get(lang_a, LanguageInfo(lang_a, lang_a.title(), lang_a))
     info_b = SUPPORTED_LANGUAGES.get(lang_b, LanguageInfo(lang_b, lang_b.title(), lang_b))
 
-    name_a = f"Speaker A ({info_a.name})"
-    name_b = f"Speaker B ({info_b.name})"
-
-    print_banner(name_a, lang_a, name_b, lang_b)
+    name_a = args.name_a
+    name_b = args.name_b
 
     # 1. Initialize Engines
-    print("Loading AI pipeline (Faster-Whisper INT8 CPU, Neural NMT, Neural TTS)...")
+    print("Loading AI pipeline (VoxLingua107 ECAPA LID, Faster-Whisper INT8, Neural NMT, Neural TTS)...")
     from faster_whisper import WhisperModel
     shared_whisper = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=4)
+    LanguageDetectionEngine.get_ecapa_model()
 
     lid_engine = LanguageDetectionEngine(whisper_model=shared_whisper, model_size="base")
     asr_service = StreamingAsrService(model_size="base", shared_model=shared_whisper)
@@ -106,179 +169,187 @@ def main():
     player = AudioPlaybackEngine()
 
     streamer = LiveAudioStreamer(
-        vad_start_threshold=0.45,
-        vad_end_threshold=0.30,
-        hangover_ms=500,
-        min_speech_ms=300
+        device_index=args.device,
+        vad_start_threshold=0.35,
+        vad_end_threshold=0.25,
+        hangover_ms=1000,
+        min_speech_ms=300,
+        max_speech_ms=9000
     )
+
+    # Resolve active microphone name for UI
+    dev_name = "Default Microphone"
+    try:
+        active_idx = streamer.device_index if streamer.device_index is not None else sd.default.device[0]
+        dev_info = sd.query_devices(active_idx)
+        dev_name = f"[{active_idx}] {dev_info.get('name')}"
+    except Exception:
+        pass
+
+    print_banner(name_a, lang_a, name_b, lang_b, dev_name)
+
     # Echo feedback prevention
     link_playback_to_streamer(player, streamer, duck_only=False)
 
-    print("Pipeline ready! Feedback loop protection active.\n")
-
     turn_count = 0
-    reply_idx = 0
 
     def process_turn(audio_samples: np.ndarray, sample_rate: int = 16000):
-        nonlocal turn_count, reply_idx
+        nonlocal turn_count
         turn_count += 1
 
         t0 = time.perf_counter()
 
-        # Step 1: Detect spoken language
-        t_lid = time.perf_counter()
-        lid_res = lid_engine.identify_spoken(audio_samples, sample_rate=sample_rate)
-        detected_lang = lid_res.language_code
-        lid_ms = (time.perf_counter() - t_lid) * 1000.0
+        # Software AGC (Peak Normalization) for Bluetooth headsets / quiet mics
+        peak = float(np.max(np.abs(audio_samples))) if len(audio_samples) > 0 else 0.0
+        if peak > 0.003:
+            audio_samples = (audio_samples / peak * 0.90).astype(np.float32)
 
-        # Step 2: Determine who spoke (Speaker A or Speaker B)
-        # If detected language matches or clusters with Party A -> Speaker A spoke
-        # If detected language matches or clusters with Party B -> Speaker B spoke
-        if detected_lang == lang_b:
-            active_speaker = name_b
-            active_lang = lang_b
-            active_gender = args.gender_b
-            active_pitch = args.pitch_b
-
-            recipient_speaker = name_a
-            recipient_lang = lang_a
-        else:
-            active_speaker = name_a
-            active_lang = lang_a
-            active_gender = args.gender_a
-            active_pitch = args.pitch_a
-
-            recipient_speaker = name_b
-            recipient_lang = lang_b
-
-        # Step 3: ASR Speech-to-Text
+        # Step 1: Speech-to-Text ASR
         t_asr = time.perf_counter()
-        asr_res = asr_service.transcribe(audio_or_path=audio_samples, language=detected_lang)
+        asr_res = asr_service.transcribe(audio_or_path=audio_samples, language=lang_a, beam_size=1)
         asr_ms = (time.perf_counter() - t_asr) * 1000.0
 
         spoken_text = asr_res.text.strip()
-        if not spoken_text:
+        clean_words = "".join(c for c in spoken_text if c.isalnum())
+        if not clean_words or len(clean_words) < 2:
             return
 
-        # Step 4: Translation into recipient's language
+        # Step 2: Translation for Party B
         t_trans = time.perf_counter()
-        trans_res = translation.translate(
-            text=spoken_text,
-            source_lang=detected_lang,
-            target_lang=recipient_lang,
-            speaker_name=active_speaker,
-            receiver_name=recipient_speaker
-        )
-        trans_ms = (time.perf_counter() - t_trans) * 1000.0
+        if lang_a == lang_b:
+            trans_for_b = spoken_text
+            trans_ms = 0.0
+        else:
+            trans_res = translation.translate(
+                text=spoken_text,
+                source_lang=lang_a,
+                target_lang=lang_b,
+                speaker_name=name_a,
+                receiver_name=name_b
+            )
+            trans_for_b = trans_res.translated_text
+            trans_ms = (time.perf_counter() - t_trans) * 1000.0
 
-        # Step 5: Neural TTS in recipient's language using ACTIVE SPEAKER'S CLONED VOICE
-        t_tts = time.perf_counter()
-        tts_res = tts.synthesize(
-            text=trans_res.translated_text,
-            language_code=recipient_lang,
-            gender=active_gender,
-            pitch=active_pitch
-        )
-        tts_ms = (time.perf_counter() - t_tts) * 1000.0
-
-        total_ms = (time.perf_counter() - t0) * 1000.0
-
-        # Display Live Call Log
         print("\n" + "=" * 76)
         print(f"📞 [CALL TURN #{turn_count}]")
-        print(f"   👤 Spoken by     : {active_speaker} ({lid_res.language_name} [{detected_code_fmt(detected_lang)}])")
-        print(f"   🗣️  Original Text : \"{spoken_text}\"")
-        print(f"   ------------------------------------------------------------------------")
-        print(f"   🎯 Delivered to  : {recipient_speaker} ({recipient_lang.upper()})")
-        print(f"   🌐 Translation   : \"{trans_res.translated_text}\"")
-        print(f"   🎙️ Cloned Voice  : {active_speaker}'s Voice ({tts_res.voice_id}, Pitch: {active_pitch})")
-        print(f"   ⏱️ Latency       : {total_ms:.0f}ms (LID: {lid_ms:.0f}ms, ASR: {asr_ms:.0f}ms, NMT: {trans_ms:.0f}ms, TTS: {tts_ms:.0f}ms)")
-        print(f"   🔊 Playing translation aloud for {recipient_speaker}...")
-        print("=" * 76)
+        print(f"   👤 {name_a} Spoke ({info_a.name} [{lang_a.upper()}]):")
+        print(f"      🗣️  \"{spoken_text}\" (ASR Latency: {asr_ms:.0f}ms)")
+        if lang_a != lang_b:
+            print(f"   🌐 Delivered to {name_b} ({info_b.name} [{lang_b.upper()}]):")
+            print(f"      📝 \"{trans_for_b}\"")
+        print("   " + "-" * 72)
 
-        # Play audio out loud for the recipient
-        player.play(tts_res.audio, sample_rate=tts_res.sample_rate, blocking=True)
+        # Step 3: Call Partner (Sarah) Contextual Response
+        reply_in_b_lang = generate_call_partner_reply(spoken_text, reply_lang=lang_b)
 
-        # Step 6: If auto-reply is enabled and Speaker A spoke, simulate Speaker B's response!
-        if args.auto_reply and active_speaker == name_a:
-            time.sleep(0.5)
-            simulate_recipient_reply(
+        # Translate reply to A's language (if different)
+        if lang_a == lang_b:
+            spoken_reply_for_a = reply_in_b_lang
+        else:
+            reply_trans = translation.translate(
+                text=reply_in_b_lang,
+                source_lang=lang_b,
+                target_lang=lang_a,
                 speaker_name=name_b,
-                speaker_lang=lang_b,
-                speaker_gender=args.gender_b,
-                speaker_pitch=args.pitch_b,
-                target_name=name_a,
-                target_lang=lang_a
+                receiver_name=name_a
             )
+            spoken_reply_for_a = reply_trans.translated_text
 
-    def simulate_recipient_reply(speaker_name, speaker_lang, speaker_gender, speaker_pitch, target_name, target_lang):
-        nonlocal turn_count, reply_idx
-        turn_count += 1
+        print(f"   👤 {name_b}'s Reply ({info_b.name} [{lang_b.upper()}]):")
+        print(f"      🗣️  \"{reply_in_b_lang}\"")
+        if lang_a != lang_b:
+            print(f"   🌐 Delivered to {name_a} ({info_a.name} [{lang_a.upper()}]):")
+            print(f"      📝 \"{spoken_reply_for_a}\"")
 
-        replies = AUTO_REPLIES.get(speaker_lang, AUTO_REPLIES["ta"])
-        reply_text = replies[reply_idx % len(replies)]
-        reply_idx += 1
+        # Step 4: Synthesize Neural Voice and Speak Aloud
+        try:
+            tts_lang = lang_a if lang_a == lang_b else lang_a
+            tts_res = tts.synthesize(
+                text=spoken_reply_for_a,
+                language_code=tts_lang,
+                gender=args.gender_b
+            )
+            print(f"   🎙️ Neural Voice: {tts_res.voice_id}")
+            print(f"   🔊 Speaking {name_b}'s reply aloud through your earphones/speakers...")
+            print("=" * 76)
+            sys.stdout.flush()
+            player.play(tts_res.audio, sample_rate=tts_res.sample_rate, blocking=True)
+            print(f"\n[Microphone Active] Listening for {name_a} to speak again...")
+            sys.stdout.flush()
+        except Exception as e:
+            print(f"   ❌ TTS Playback error: {e}")
 
-        t0 = time.perf_counter()
-        # Translate B's reply to A's language
-        t_trans = time.perf_counter()
-        trans_res = translation.translate(
-            text=reply_text,
-            source_lang=speaker_lang,
-            target_lang=target_lang,
-            speaker_name=speaker_name,
-            receiver_name=target_name
-        )
-        trans_ms = (time.perf_counter() - t_trans) * 1000.0
+    # Interactive Keyboard Text Mode
+    if args.text:
+        print("⌨️  INTERACTIVE KEYBOARD MODE")
+        print(f"   Type a sentence as {name_a} and press Enter.")
+        print(f"   {name_b} will reply contextually and speak back aloud!")
+        print("   Type 'exit' to quit.\n" + "-" * 76)
 
-        # Synthesize in A's language using SPEAKER B'S CLONED VOICE
-        t_tts = time.perf_counter()
-        tts_res = tts.synthesize(
-            text=trans_res.translated_text,
-            language_code=target_lang,
-            gender=speaker_gender,
-            pitch=speaker_pitch
-        )
-        tts_ms = (time.perf_counter() - t_tts) * 1000.0
-        total_ms = (time.perf_counter() - t0) * 1000.0
+        while True:
+            try:
+                user_msg = input(f"\n[{name_a} - {lang_a.upper()}] > ").strip()
+                if not user_msg or user_msg.lower() in ("exit", "quit", "q"):
+                    break
 
-        print("\n" + "=" * 76)
-        print(f"📞 [CALL TURN #{turn_count} - RESPONSE]")
-        print(f"   👤 Spoken by     : {speaker_name} ({speaker_lang.upper()})")
-        print(f"   🗣️  Original Text : \"{reply_text}\"")
-        print(f"   ------------------------------------------------------------------------")
-        print(f"   🎯 Delivered to  : {target_name} ({target_lang.upper()})")
-        print(f"   🌐 Translation   : \"{trans_res.translated_text}\"")
-        print(f"   🎙️ Cloned Voice  : {speaker_name}'s Voice ({tts_res.voice_id}, Pitch: {speaker_pitch})")
-        print(f"   ⏱️ Latency       : {total_ms:.0f}ms (NMT: {trans_ms:.0f}ms, TTS: {tts_ms:.0f}ms)")
-        print(f"   🔊 Playing translation aloud for {target_name}...")
-        print("=" * 76)
+                turn_count += 1
+                # Translation for B
+                if lang_a == lang_b:
+                    trans_for_b = user_msg
+                else:
+                    tr = translation.translate(user_msg, source_lang=lang_a, target_lang=lang_b)
+                    trans_for_b = tr.translated_text
 
-        player.play(tts_res.audio, sample_rate=tts_res.sample_rate, blocking=True)
-        print(f"\n[Microphone Active] Listening for {name_a} to speak again...")
+                print(f"   🌐 Delivered to {name_b}: \"{trans_for_b}\"")
 
-    def detected_code_fmt(code):
-        return code.upper()
+                # B's contextual reply
+                reply_in_b = generate_call_partner_reply(user_msg, reply_lang=lang_b)
+                if lang_a == lang_b:
+                    reply_for_a = reply_in_b
+                else:
+                    tr2 = translation.translate(reply_in_b, source_lang=lang_b, target_lang=lang_a)
+                    reply_for_a = tr2.translated_text
 
+                print(f"   👤 {name_b} ({lang_b.upper()}): \"{reply_in_b}\"")
+                print(f"   🌐 Translated to {lang_a.upper()}: \"{reply_for_a}\"")
+                print(f"   🔊 Speaking aloud through your earphones/speakers...")
+
+                tts_res = tts.synthesize(text=reply_for_a, language_code=lang_a, gender=args.gender_b)
+                player.play(tts_res.audio, sample_rate=tts_res.sample_rate, blocking=True)
+
+            except (KeyboardInterrupt, EOFError):
+                break
+        print("\nExiting call session.")
+        return
+
+    # Microphone Live Mode
     streamer.register_on_utterance_complete(lambda seg: process_turn(seg.audio, seg.sample_rate))
     streamer.start()
 
     print("🟢 CALL IN PROGRESS!")
-    print(f"👉 Speak into your microphone in {info_a.name} ({lang_a}) as {name_a}.")
-    print(f"   {name_b} will hear your speech in {info_b.name} ({lang_b}) in YOUR cloned voice.")
-    print("   Press Ctrl+C to terminate the call.\n")
+    print(f"👉 Speak into your microphone as {name_a} in {info_a.name} ({lang_a.upper()}).")
+    print(f"   Example: \"Hi, how are you?\" or \"Can you hear me?\"")
+    print(f"   {name_b} will hear your translated words and reply to you in spoken voice!")
+    if args.duration:
+        print(f"   Call will run for {args.duration:.0f} seconds (or press Ctrl+C to terminate).")
+    else:
+        print("   Press Ctrl+C to terminate the call.\n")
 
+    t_start = time.time()
     try:
         spinner = ["|", "/", "-", "\\"]
         idx = 0
         while True:
+            if args.duration and (time.time() - t_start >= args.duration):
+                print(f"\n\n⏱️ Duration limit ({args.duration:.0f}s) reached.")
+                break
             rms = streamer.current_rms_dbfs
             prob = streamer.current_speech_prob
-            is_speaking = prob >= 0.45
+            is_speaking = prob >= 0.35
             tag = "🗣️ SPEAKING" if is_speaking else "👂 LISTENING"
             bar_len = int(max(0, min(14, (rms + 60) / 4)))
             vu_bar = "█" * bar_len + "░" * (14 - bar_len)
-            muted = " [MIC DUCKED]" if player.is_playing else ""
+            muted = " [MIC MUTED - AI SPEAKING]" if player.is_playing else ""
 
             sys.stdout.write(f"\r{spinner[idx % 4]} [{tag}] [{vu_bar}] {rms:5.1f} dBFS | VAD: {prob:4.2f}{muted}   ")
             sys.stdout.flush()
@@ -290,7 +361,7 @@ def main():
         streamer.stop()
         player.stop()
 
-    print(f"Call session ended. Total turns: {turn_count}\n")
+    print(f"\n📞 Call session ended. Total turns: {turn_count}\n")
 
 
 if __name__ == "__main__":
