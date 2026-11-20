@@ -15,9 +15,13 @@ Turn 1: Uma speaks into microphone: "Hi, how are you?"
 Zero disk writes. Real-time VAD, LID, ASR, NMT, TTS, and acoustic feedback protection.
 """
 
+import os
 import sys
 import time
+import json
 import argparse
+import urllib.request
+from typing import Optional
 import numpy as np
 import sounddevice as sd
 
@@ -34,14 +38,56 @@ from app.models.language import SUPPORTED_LANGUAGES, LanguageInfo, normalize_lan
 
 _FALLBACK_INDEX = 0
 
-def generate_call_partner_reply(user_text: str, reply_lang: str = "en") -> str:
+
+def query_gemini_llm(user_text: str, reply_lang: str = "en", api_key: Optional[str] = None) -> Optional[str]:
+    """
+    Optional LLM brain: queries Google Gemini 2.0 / 1.5 Flash for natural, open-ended
+    conversational intelligence to answer ANY question on Earth when an API key is available.
+    """
+    key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if not key:
+        return None
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
+        headers = {"Content-Type": "application/json"}
+        lang_prompt = f"in {reply_lang}" if reply_lang != "en" else "in natural English"
+        prompt = (
+            f"You are Sarah, a warm, intelligent AI conversational partner on a real-time voice call with Uma. "
+            f"Respond directly, accurately, and naturally to what Uma says in 1 or 2 spoken sentences {lang_prompt}. "
+            f"Never use markdown, emojis, asterisks, bullet points, or stage directions. Spoken voice only.\n\n"
+            f"Uma: {user_text}\n"
+            f"Sarah:"
+        )
+        payload = json.dumps({
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"maxOutputTokens": 75, "temperature": 0.7}
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=3.5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            candidate = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            # Clean up any quotes or markdown
+            candidate = candidate.replace("*", "").replace("\"", "").replace("\n", " ").strip()
+            if candidate:
+                return candidate
+    except Exception:
+        pass
+    return None
+
+
+def generate_call_partner_reply(user_text: str, reply_lang: str = "en", gemini_key: Optional[str] = None) -> str:
     """
     Intelligent conversational call partner response generator.
-    Replies contextually to greetings, typos, food/dinner queries, Telugu/Hindi/Tamil
-    phrases in native script or Romanized script (Tenglish/Hinglish), and chit-chat.
+    1. Checks Gemini LLM first (if key provided) for unlimited question answering.
+    2. Uses comprehensive local knowledge base for offline operation.
     """
     global _FALLBACK_INDEX
     text_lower = user_text.lower().strip()
+
+    # Priority 0: Query Gemini LLM if key is available
+    llm_resp = query_gemini_llm(user_text, reply_lang=reply_lang, api_key=gemini_key)
+    if llm_resp:
+        return llm_resp
 
     # 1. Greetings & "How are you" (tolerates typos like 'how are ou', 'how r u', 'ela unnaru', etc.)
     how_are_you_patterns = [
@@ -289,7 +335,73 @@ def generate_call_partner_reply(user_text: str, reply_lang: str = "en") -> str:
         }
         return replies.get(reply_lang, replies["en"])
 
-    # 9. Goodbyes
+    # 16. Jokes & Humor
+    joke_patterns = ["joke", "jokes", "make me laugh", "funny", "tell me a joke"]
+    if any(q in text_lower for q in joke_patterns):
+        replies = {
+            "en": "Why don't scientists trust atoms? Because they make up everything!",
+            "te": "ఒక చిన్న జోక్: కంప్యూటర్‌కి అత్యంత ఇష్టమైన స్నాక్ ఏంటో తెలుసా? మైక్రోచిప్స్!",
+            "ta": "ஒரு சிறிய நகைச்சுவை: கணிப்பொறிக்கு மிகவும் பிடித்த உணவு எது தெரியுமா? மைக்ரோசிப்ஸ்!",
+            "hi": "एक छोटा सा जोक: वैज्ञानिकों को परमाणुओं पर भरोसा क्यों नहीं होता? क्योंकि वे सब कुछ खुद ही बना लेते हैं!"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 17. Tea, Coffee, Chai
+    tea_patterns = ["tea", "chai", "coffee", "drink tea", "had tea"]
+    if any(q in text_lower for q in tea_patterns):
+        replies = {
+            "en": "A warm cup of tea or coffee always refreshes the spirit! Have you had yours today?",
+            "te": "వేడి వేడి టీ లేదా కాఫీ తాగితే మనసుకి చాలా ఉత్సాహంగా ఉంటుంది! మీరు టీ తాగారా?",
+            "ta": "சூடான டீ அல்லது காபி குடித்தால் மிகவும் புத்துணர்ச்சியாக இருக்கும்! நீங்கள் குடித்தீர்களா?",
+            "hi": "गरमा-गरम चाय या कॉफ़ी पीने से दिन बन जाता है! क्या आपने चाय पी?"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 18. Cooking & Biryani
+    biryani_patterns = ["biryani", "cook", "cooking", "recipe"]
+    if any(q in text_lower for q in biryani_patterns):
+        replies = {
+            "en": "Hyderabadi biryani with aromatic basmati rice and rich spices is simply the best!",
+            "te": "హైదరాబాదీ దమ్ బిర్యానీ సువాసన మరియు రుచే వేరు! బిర్యానీ అంటే అందరికీ చాలా ఇష్టం.",
+            "ta": "சுவையான பிரியாணி எப்போதும் அருமையான உணவு! உங்களுக்கு பிரியாணி பிடிக்குமா?",
+            "hi": "हैदराबादी बिरयानी का स्वाद वाकई लाजवाब होता है! क्या आपको बिरयानी पसंद है?"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 19. Python, Coding & AI
+    code_patterns = ["python", "coding", "programmer", "software", "machine learning", "what is ai"]
+    if any(q in text_lower for q in code_patterns):
+        replies = {
+            "en": "Python is incredible for AI and speech pipelines! We are using Python right now for our real-time voice call translation.",
+            "te": "పైథాన్ ద్వారా శక్తివంతమైన AI ప్రాజెక్టులను రూపొందించవచ్చు! మన వాయిస్ ప్రాజెక్ట్ కూడా పైథాన్‌లోనే నడుస్తోంది.",
+            "ta": "செயற்கை நுண்ணறிவு மற்றும் குரல் மொழிபெயர்ப்புக்கு பைதான் மிகவும் சிறந்தது!",
+            "hi": "पायथन AI और वॉयस प्रोसेसिंग के लिए बहुत शक्तिशाली है! हमारा प्रोजेक्ट भी पायथन पर चल रहा है."
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 20. Cities & Hyderabad
+    city_patterns = ["hyderabad", "bangalore", "delhi", "chennai", "mumbai", "vizag"]
+    if any(q in text_lower for q in city_patterns):
+        replies = {
+            "en": "Hyderabad is a wonderful city, globally known for Charminar, Hi-Tech City, and rich culinary traditions!",
+            "te": "హైదరాబాద్ నగరం, చార్మినార్ మరియు హైటెక్ సిటీ చాలా అందమైనవి మరియు ప్రసిద్ధి చెందినవి!",
+            "ta": "ஹைதராபாத் மிகவும் அழகான வரலாற்று சிறப்புமிக்க நகரம்!",
+            "hi": "हैदराबाद चारमीनार, हाई-टेक सिटी और अपनी संस्कृति के लिए बहुत मशहूर है!"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 21. Music & Songs
+    music_patterns = ["song", "music", "sing", "singer", "listen to music"]
+    if any(q in text_lower for q in music_patterns):
+        replies = {
+            "en": "Listening to soulful music is wonderful for relaxation! What genre of music do you enjoy?",
+            "te": "మంచి సంగీతం వినడం మనసుకు ఎంతో ప్రశాంతతను ఇస్తుంది! మీకు ఏ పాటలు అంటే ఇష్టం?",
+            "ta": "இனிய இசை கேட்பது மனதிற்கு மிகவும் அமைதியை தரும்! உங்களுக்கு என்ன பாடல் பிடிக்கும்?",
+            "hi": "अच्छा संगीत सुनना मन को बहुत शांति देता है! आपका पसंदीदा गाना कौन सा है?"
+        }
+        return replies.get(reply_lang, replies["en"])
+
+    # 22. Goodbyes
     bye_patterns = [
         "bye", "goodbye", "see you", "talk to you later", "good night", "tata",
         "టాటా", "వెళ్ళొస్తాను", "vellostanu",
@@ -340,7 +452,7 @@ def generate_call_partner_reply(user_text: str, reply_lang: str = "en") -> str:
     return reply
 
 
-def print_banner(a_name, a_lang, b_name, b_lang, input_device_name, output_device_name):
+def print_banner(a_name, a_lang, b_name, b_lang, input_device_name, output_device_name, llm_active: bool = False):
     print("\n" + "=" * 76)
     print("  BIDIRECTIONAL MULTILINGUAL VOICE CALL (LIVE CONVERSATION PARTNER)")
     print(f"  Party A: {a_name} ({a_lang.upper()})  <== FULL-DUPLEX ==>  Party B: {b_name} ({b_lang.upper()})")
@@ -348,6 +460,8 @@ def print_banner(a_name, a_lang, b_name, b_lang, input_device_name, output_devic
     print(f"  🎙️ Microphone (Input)     : {input_device_name}")
     print(f"  🔊 Sound Playback (Output) : {output_device_name}")
     print(f"  🔒 Feedback Suppression   : ACTIVE (Microphone auto-mutes during AI speech)")
+    brain_info = "⚡ Google Gemini LLM (Open-Ended Reasoning for ANY Question)" if llm_active else "🛡️ Smart Offline Knowledge Engine (Privacy / Zero-Cloud)"
+    print(f"  🧠 Conversational Brain   : {brain_info}")
     print(f"  • When you speak as {a_name}:")
     print(f"    1. System transcribes what you said.")
     print(f"    2. Translates it for {b_name} into {b_lang.upper()}.")
@@ -369,6 +483,7 @@ def main():
     parser.add_argument("--speaker", action="store_true", help="Force sound output through laptop physical speakers instead of earphones")
     parser.add_argument("--duration", type=float, default=None, help="Call duration limit in seconds (default: runs indefinitely until Ctrl+C)")
     parser.add_argument("--text", action="store_true", help="Interactive keyboard text mode (type instead of speaking)")
+    parser.add_argument("--gemini-key", type=str, default=None, help="Google Gemini API Key for unlimited real-time AI reasoning to any question")
     args = parser.parse_args()
 
     lang_a = normalize_language_code(args.party_a, default="en")
@@ -426,7 +541,8 @@ def main():
     except Exception:
         pass
 
-    print_banner(name_a, lang_a, name_b, lang_b, in_name, out_name)
+    is_llm = bool(args.gemini_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+    print_banner(name_a, lang_a, name_b, lang_b, in_name, out_name, llm_active=is_llm)
 
     # Echo feedback prevention
     link_playback_to_streamer(player, streamer, duck_only=False)
@@ -488,7 +604,7 @@ def main():
         print("   " + "-" * 72)
 
         # Step 3: Call Partner (Sarah) Contextual Response
-        reply_in_b_lang = generate_call_partner_reply(spoken_text, reply_lang=lang_b)
+        reply_in_b_lang = generate_call_partner_reply(spoken_text, reply_lang=lang_b, gemini_key=args.gemini_key)
 
         # Translate reply to A's language (if different)
         if lang_a == lang_b:
@@ -551,7 +667,7 @@ def main():
                 print(f"   🌐 Delivered to {name_b}: \"{trans_for_b}\"")
 
                 # B's contextual reply
-                reply_in_b = generate_call_partner_reply(user_msg, reply_lang=lang_b)
+                reply_in_b = generate_call_partner_reply(user_msg, reply_lang=lang_b, gemini_key=args.gemini_key)
                 if lang_a == lang_b:
                     reply_for_a = reply_in_b
                 else:
