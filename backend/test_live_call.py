@@ -24,6 +24,7 @@ from app.services.asr_service import StreamingAsrService
 from app.services.translation_service import TranslationService
 from app.services.tts_service import StreamingTtsService
 from app.services.voice_cloner import VoiceCloningService
+from app.services.openvoice_cloner import get_openvoice_cloner
 from app.models.language import SUPPORTED_LANGUAGES, LanguageInfo, normalize_language_code
 
 
@@ -89,7 +90,9 @@ def main():
     translation_service = TranslationService()
     tts_service = StreamingTtsService()
     playback_engine = AudioPlaybackEngine()
-    print("  -> All AI engines ready.")
+    openvoice_cloner = get_openvoice_cloner()
+    cached_caller_se = None
+    print(f"  -> All AI engines ready. (Neural Voice Cloner: {'ACTIVE' if openvoice_cloner.is_ready else 'OFF'})")
 
     # 3. Setup Hardware Microphone Streamer & Echo Loop Safety Switch
     print("[3/4] Linking Acoustic Echo Prevention Safety Switch...")
@@ -110,7 +113,7 @@ def main():
 
     # 4. End-to-End Processing Callback
     def on_speech_complete(segment: SpeechSegment):
-        nonlocal turn_counter
+        nonlocal turn_counter, cached_caller_se
         turn_counter += 1
 
         t_pipeline_start = time.perf_counter()
@@ -125,6 +128,15 @@ def main():
         peak = float(np.max(np.abs(audio))) if len(audio) > 0 else 0.0
         if peak > 0.003:
             audio = (audio / peak * 0.90).astype(np.float32)
+
+        # Extract Neural Speaker Embedding for Zero-Shot Voice Cloning
+        if openvoice_cloner.is_ready and len(audio) >= sr * 1.0:
+            try:
+                new_se = openvoice_cloner.extract_speaker_embedding(audio, sr)
+                if new_se is not None:
+                    cached_caller_se = new_se
+            except Exception:
+                pass
 
         # --------------------------------------------------------------
         # Phase 3 & 4: Unified Acoustic LID + Streaming ASR
@@ -249,10 +261,24 @@ def main():
         # Phase 8: Real-Time Speaker Playback (Echo-Protected)
         # --------------------------------------------------------------
         if tts_result is not None:
+            audio_out = tts_result.audio
+            sr_out = tts_result.sample_rate
+
+            if cached_caller_se is not None and openvoice_cloner.is_ready:
+                sys.stdout.write("  🎨 [Phase 7] OpenVoice v2: Morphing tone color into caller's vocal tract...\n")
+                sys.stdout.flush()
+                t_ov_0 = time.perf_counter()
+                audio_out, sr_out = openvoice_cloner.convert_voice(
+                    base_audio=tts_result.audio,
+                    src_sample_rate=tts_result.sample_rate,
+                    target_se=cached_caller_se
+                )
+                sys.stdout.write(f"     -> Neural Voice Cloning Time: {(time.perf_counter() - t_ov_0)*1000:.1f}ms\n")
+
             mode_label = "echo voice" if (args.echo or detected_code == target_lang) else "translated voice"
             sys.stdout.write(f"  🔊 [Phase 8] Playing {mode_label} aloud through speakers (Mic safely muted)...\n")
             sys.stdout.flush()
-            playback_engine.play(tts_result.audio, sample_rate=tts_result.sample_rate, blocking=True)
+            playback_engine.play(audio_out, sample_rate=sr_out, blocking=True)
             sys.stdout.write(f"  ✅ Playback finished. Microphone unmuted and listening...\n")
 
         sys.stdout.write(f"{'-' * 74}\n")

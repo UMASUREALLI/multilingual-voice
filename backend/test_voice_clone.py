@@ -13,6 +13,7 @@ import numpy as np
 import sounddevice as sd
 
 from app.services.voice_cloner import VoiceCloningService
+from app.services.openvoice_cloner import get_openvoice_cloner
 from app.services.tts_service import StreamingTtsService
 from app.audio.player import AudioPlaybackEngine
 from app.models.speaker import AcousticFeatures
@@ -87,6 +88,7 @@ def main():
     print_banner()
 
     cloner = VoiceCloningService()
+    openvoice = get_openvoice_cloner()
     tts = StreamingTtsService()
     player = AudioPlaybackEngine()
 
@@ -97,7 +99,7 @@ def main():
         print("❌ Audio was too short. Please run again and speak clearly.")
         return
 
-    # Step 2: Extract acoustic features
+    # Step 2: Extract acoustic features and neural speaker embedding
     features = cloner.extract_acoustic_features(audio, sample_rate=16000)
     if args.gender:
         features.estimated_gender = args.gender
@@ -106,6 +108,15 @@ def main():
     display_acoustic_profile(features, pitch_adj, rate_adj)
 
     gender = features.estimated_gender
+
+    target_se = None
+    if openvoice.is_ready:
+        print("  🧠 Extracting neural tone color vector (OpenVoice v2 zero-shot)...")
+        target_se = openvoice.extract_speaker_embedding(audio, sample_rate=16000)
+        if target_se is not None:
+            print("  ✅ 256-D Neural Speaker Embedding captured in RAM successfully!\n")
+        else:
+            print("  ⚠️ Could not extract neural embedding; using acoustic adaptation fallback.\n")
 
     # Step 3: Multilingual Voice Showcase using cloned profile
     test_phrases = [
@@ -128,16 +139,30 @@ def main():
             pitch=pitch_adj,
             rate=rate_adj
         )
-        latency = (time.perf_counter() - t0) * 1000.0
-        print(f"     -> Neural Voice: {res.voice_id} | Latency: {latency:.1f}ms | Playing aloud...")
 
-        player.play(res.audio, sample_rate=res.sample_rate, blocking=True)
+        audio_to_play = res.audio
+        play_sr = res.sample_rate
+
+        if target_se is not None and openvoice.is_ready:
+            print(f"     🎨 Morphing tone color to your voice via OpenVoice v2...")
+            t_cv_0 = time.perf_counter()
+            audio_to_play, play_sr = openvoice.convert_voice(
+                base_audio=res.audio,
+                src_sample_rate=res.sample_rate,
+                target_se=target_se
+            )
+            print(f"     -> Voice Conversion Time: {(time.perf_counter() - t_cv_0)*1000:.1f}ms")
+
+        latency = (time.perf_counter() - t0) * 1000.0
+        print(f"     -> Neural Voice: {res.voice_id} | Total Latency: {latency:.1f}ms | Playing aloud...")
+
+        player.play(audio_to_play, sample_rate=play_sr, blocking=True)
         time.sleep(0.6)
 
     # Step 4: Interactive Typing Mode in Cloned Voice
     print("\n" + "=" * 74)
     print("⌨️  INTERACTIVE CLONED VOICE TYPING MODE")
-    print(f"   Active Cloned Profile: {gender.upper()} • Pitch: {pitch_adj} • Tempo: {rate_adj}")
+    print(f"   Active Cloned Profile: {gender.upper()} • Pitch: {pitch_adj} • Neural Timbre: {'ACTIVE (OpenVoice v2)' if target_se is not None else 'Fallback'}")
     print("   Type any sentence to hear it spoken aloud in your cloned voice.")
     print("   Prefix with language code to switch: 'te: <text>', 'hi: <text>', or default English.")
     print("   Type 'exit' or 'quit' to end.")
@@ -175,7 +200,19 @@ def main():
                 pitch=pitch_adj,
                 rate=rate_adj
             )
-            player.play(res.audio, sample_rate=res.sample_rate, blocking=True)
+
+            audio_to_play = res.audio
+            play_sr = res.sample_rate
+
+            if target_se is not None and openvoice.is_ready:
+                print(f"   🎨 Morphing into your cloned voice...")
+                audio_to_play, play_sr = openvoice.convert_voice(
+                    base_audio=res.audio,
+                    src_sample_rate=res.sample_rate,
+                    target_se=target_se
+                )
+
+            player.play(audio_to_play, sample_rate=play_sr, blocking=True)
 
         except (KeyboardInterrupt, EOFError):
             print("\nExiting voice clone testbench.")
