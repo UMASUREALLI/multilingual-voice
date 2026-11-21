@@ -37,7 +37,16 @@ class OpenVoiceCloner:
 
     def _load_model(self):
         try:
-            from openvoice.api import ToneColorConverter
+            from openvoice.api import ToneColorConverter, OpenVoiceBaseClass
+
+            # Patch kwargs bug in OpenVoice ToneColorConverter if present
+            def _safe_init(conv_self, *args, **kwargs):
+                kwargs.pop("enable_watermark", None)
+                super(ToneColorConverter, conv_self).__init__(*args, **kwargs)
+                conv_self.watermark_model = None
+                conv_self.version = getattr(conv_self.hps, "_version_", "v1")
+
+            ToneColorConverter.__init__ = _safe_init
 
             config_path = os.path.join(CHECKPOINTS_DIR, "converter", "config.json")
             ckpt_path = os.path.join(CHECKPOINTS_DIR, "converter", "checkpoint.pth")
@@ -51,7 +60,7 @@ class OpenVoiceCloner:
             cpu_threads = max(2, min(os.cpu_count() or 4, 8))
             torch.set_num_threads(cpu_threads)
 
-            self.converter = ToneColorConverter(config_path, device=self.device, enable_watermark=False)
+            self.converter = ToneColorConverter(config_path, device=self.device)
             self.converter.load_ckpt(ckpt_path)
 
             if os.path.exists(src_se_path):
