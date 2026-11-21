@@ -204,10 +204,21 @@ def main():
                     pass
 
         # --------------------------------------------------------------
-        # Phase 6 & 7: Streaming Neural TTS & Voice Adaptation
+        # Phase 6 & 7: Streaming Neural TTS & Real-Time Voice Cloning Adaptation
         # --------------------------------------------------------------
         tts_result = None
         t_tts_ms = 0.0
+
+        # Automatic live acoustic profiling for voice cloning:
+        # Extract Fundamental Pitch (F0), Vocal Gender, and Speech Rate from caller's real voice
+        try:
+            acoustic_profile = VoiceCloningService.extract_acoustic_features(audio, sr)
+            pitch_adj, rate_adj = VoiceCloningService.calculate_prosody_adjustments(acoustic_profile)
+            cloned_gender = acoustic_profile.estimated_gender
+        except Exception:
+            acoustic_profile = None
+            pitch_adj, rate_adj = "+0Hz", "+0%"
+            cloned_gender = args.gender
 
         if not args.no_tts and tts_text:
             t_tts_0 = time.perf_counter()
@@ -215,10 +226,17 @@ def main():
                 tts_result = tts_service.synthesize(
                     text=tts_text,
                     language_code=tts_lang,
-                    gender=args.gender
+                    gender=cloned_gender,
+                    pitch=pitch_adj,
+                    rate=rate_adj
                 )
                 t_tts_ms = (time.perf_counter() - t_tts_0) * 1000.0
-                sys.stdout.write(f"  🎙️ [Phase 6] Neural Voice Synthesized: {tts_result.voice_id} | Latency: {t_tts_ms:.1f}ms\n")
+                f0_info = f"{acoustic_profile.f0_median_hz:.1f}Hz" if acoustic_profile else "N/A"
+                sys.stdout.write(
+                    f"  🎙️ [Phase 6] Cloned Voice Synthesized: {tts_result.voice_id}\n"
+                    f"     Adaptive Prosody: Gender={cloned_gender.upper()} | Pitch={f0_info} ({pitch_adj}) | "
+                    f"Tempo={rate_adj} | Latency: {t_tts_ms:.1f}ms\n"
+                )
             except Exception as e:
                 sys.stdout.write(f"  ❌ TTS Synthesis failed: {e}\n")
 

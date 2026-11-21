@@ -32,6 +32,32 @@ TRAILING_INCOMPLETE_MARKERS = {
     "ml": ("ഇല്ല", "വേണ്ട", "പക്ഷേ")
 }
 
+# Colloquial Indian conversational idiom bank (maps spoken idioms to natural colloquial English)
+COLLOQUIAL_IDIOM_BANK: Dict[Tuple[str, str, str], str] = {
+    ("te", "en", "ఏం చేయట్లేదు బ్రో"): "Not doing anything, bro",
+    ("te", "en", "ఏం చేయట్లేదు"): "Not doing anything",
+    ("te", "en", "ఏమీ చేయట్లేదు"): "Not doing anything",
+    ("te", "en", "ఏం లేదు బ్రో"): "Nothing much, bro",
+    ("te", "en", "ఏం లేదు"): "Nothing much",
+    ("te", "en", "ఏమీ లేదు"): "Nothing",
+    ("te", "en", "చిన్నపిల్లల్లో ఉన్నాడు"): "He is with the kids",
+    ("te", "en", "పిల్లల్లో ఉన్నాడు"): "He is with the children",
+    ("te", "en", "పిల్లలతో ఉన్నాడు"): "He is with the kids",
+    ("te", "en", "ఏం మాట్లాడు"): "Say something",
+    ("te", "en", "ఏం మాట్లాడాలి"): "What should I say?",
+    ("te", "en", "ఏం మాట్లాడుతున్నావు"): "What are you talking about?",
+    ("te", "en", "అయితే ఓకే ఎప్పుడు"): "Alright then, when?",
+    ("te", "en", "అయితే ఓకే"): "Alright then",
+    ("te", "en", "అంతా బాగుంది"): "Everything is good",
+    ("te", "en", "నువ్వు ఎలా ఉన్నావు"): "How are you doing?",
+    ("te", "en", "ఎలా ఉన్నారు"): "How are you?",
+    ("te", "en", "తిన్నావా"): "Had your food?",
+    ("te", "en", "భోజనం చేశారా"): "Did you have your meal?",
+    ("te", "en", "సరే బ్రో"): "Alright bro",
+    ("te", "en", "కలుద్దాం"): "Let's meet up",
+    ("te", "en", "రేపు మాట్లాడుకుందాం"): "Let's talk tomorrow",
+}
+
 # Offline common phrase bank for zero-internet testing
 OFFLINE_PHRASE_BANK: Dict[Tuple[str, str, str], str] = {
     ("te", "en", "నమస్కారం, మీరు ఎలా ఉన్నారు?"): "Hello, how are you?",
@@ -138,7 +164,27 @@ class TranslationService:
                 preserved_entities=[]
             )
 
-        # 2. Check in-memory cache
+        # 2. Check Colloquial Idiom Bank for conversational idioms
+        clean_no_punct = clean.strip(".?,! ")
+        idiom_match = (
+            COLLOQUIAL_IDIOM_BANK.get((src_iso, tgt_iso, clean)) or
+            COLLOQUIAL_IDIOM_BANK.get((src_iso, tgt_iso, clean_no_punct))
+        )
+        if idiom_match:
+            elapsed = (time.perf_counter() - t0) * 1000.0
+            return TranslationResult(
+                source_text=clean,
+                translated_text=idiom_match,
+                source_language=src_iso,
+                target_language=tgt_iso,
+                source_language_name=src_info.name,
+                target_language_name=tgt_info.name,
+                backend="colloquial_idiom_bank",
+                latency_ms=elapsed,
+                preserved_entities=[]
+            )
+
+        # 3. Check in-memory cache
         cache_key = (clean, src_iso, tgt_iso)
         if cache_key in self._cache:
             elapsed = (time.perf_counter() - t0) * 1000.0
@@ -229,6 +275,18 @@ class TranslationService:
 
         # Clean punctuation spacing
         final_text = " ".join(final_text.strip().split())
+
+        # Conversational Indian NMT Refinement (recovers from literal Google Translate parse errors)
+        if src_iso == "te" and tgt_iso == "en":
+            low_final = final_text.lower().strip()
+            if "what can you do" in low_final and ("చేయట్లేదు" in clean or "చెయ్యట్లేదు" in clean):
+                final_text = re.sub(r"(?i)bro,?\s*what can you do\??", "Not doing anything, bro", final_text)
+                final_text = re.sub(r"(?i)what can you do\??", "Not doing anything", final_text)
+            elif "in childhood" in low_final and "పిల్లల్లో" in clean:
+                final_text = re.sub(r"(?i)he is in childhood", "He is with the kids", final_text)
+                final_text = re.sub(r"(?i)in childhood", "with the children", final_text)
+            elif low_final in ("what talk", "what talk?") and "మాట్లాడు" in clean:
+                final_text = "Say something"
 
         elapsed = (time.perf_counter() - t0) * 1000.0
 

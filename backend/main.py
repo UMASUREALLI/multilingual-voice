@@ -315,13 +315,14 @@ def process_audio_turn(session_id: str, req: AudioTurnRequest):
         dur_sec = len(audio_data) / sr if sr > 0 else 0.0
         logger.info(f"Incoming audio turn: {len(audio_data)} samples @ {sr}Hz (Duration: {dur_sec:.2f}s, Peak: {peak:.4f})")
 
-        if peak < 0.012 or dur_sec < 0.25:
-            return {"status": "empty", "message": "Microphone audio was silent or too quiet. Please speak clearly into your mic."}
-
-        # Software AGC (Peak Normalization): Scale quiet microphone audio to -1.0 dBFS (0.90)
-        # This prevents Whisper from hallucinating faint foreign phonemes (like Urdu/Russian) on quiet inputs.
-        if peak > 0.003:
+        # Software AGC (Peak Normalization): Scale quiet microphone audio up to -1.0 dBFS (0.90)
+        # Allows mobile phones with quiet mic inputs to be accurately recognized by Whisper
+        if peak > 0.001:
             audio_data = (audio_data / peak * 0.90).astype(np.float32)
+            peak = 0.90
+
+        if peak < 0.005 or dur_sec < 0.20:
+            return {"status": "empty", "message": "Microphone audio was silent or too quiet. Please speak clearly into your mic."}
 
         # Pre-trim silence to ensure fast Whisper response
         trimmed, _, _ = trim_silence(audio_data, sample_rate=sr)

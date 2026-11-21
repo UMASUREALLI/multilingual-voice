@@ -296,6 +296,23 @@ class CallCoordinator:
 
         if synthesize_audio and clean_translated:
             t_tts_0 = time.perf_counter()
+
+            # Automatic Voice Profiling (extract F0 pitch, vocal gender & tempo from audio)
+            if not speaker.voice_cloned and len(audio_samples) > 0:
+                try:
+                    feat = VoiceCloningService.extract_acoustic_features(audio_samples, sample_rate)
+                    p_mod, r_mod = VoiceCloningService.calculate_prosody_adjustments(feat)
+                    speaker.gender = feat.estimated_gender
+                    speaker.pitch_mod = p_mod
+                    speaker.rate_mod = r_mod
+                    speaker.voice_cloned = True
+                    logger.info(
+                        f"[{session_id}] Auto voice profiling for {speaker.name}: "
+                        f"Gender={speaker.gender}, F0={feat.f0_median_hz:.1f}Hz, Pitch={p_mod}, Rate={r_mod}"
+                    )
+                except Exception as e_prof:
+                    logger.warning(f"Auto voice profiling skipped: {e_prof}")
+
             # Select gender and prosody based on speaker profile (if voice cloning enabled)
             gender = speaker.gender
             pitch_adj = speaker.pitch_mod if speaker.voice_cloned else "+0Hz"
