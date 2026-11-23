@@ -1,7 +1,6 @@
 """
 Hugging Face Spaces Entry Point (ZeroGPU + Gradio SDK + FastAPI Backend).
-Decorates Gradio functions with @spaces.GPU to satisfy Hugging Face ZeroGPU requirements,
-while directly serving all FastAPI REST and WebSocket call translation endpoints.
+Full-Duplex Voice Call Translation: Speech-to-Speech & Text-to-Speech Neural Audio Synthesis.
 """
 
 import os
@@ -13,7 +12,8 @@ BACKEND_DIR = os.path.join(ROOT_DIR, "backend")
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
-from main import app as fastapi_app
+import numpy as np
+from main import app as fastapi_app, coordinator
 import gradio as gr
 
 # Intercept Gradio's internal App creation immediately so all FastAPI endpoints take priority
@@ -46,16 +46,46 @@ def _zerogpu_anchor():
     return ""
 
 
-# Real-time CPU translation function for browser testing (zero GPU quota consumed!)
-def translate_message(text: str, source_lang: str, target_lang: str) -> str:
-    """Instant CPU translation endpoint for browser testing."""
-    if not text.strip():
-        return ""
-    from app.services.translation_service import TranslationService
-    service = TranslationService()
-    res = service.translate(text=text, source_lang=source_lang, target_lang=target_lang)
-    return res.translated_text
+# Real-time Text-to-Speech translation (Translates text and synthesizes neural voice)
+def voice_translate_text(text: str, source_lang: str, target_lang: str):
+    if not text or not text.strip():
+        return "", None
+    trans_res = coordinator.translation.translate(text=text, source_lang=source_lang, target_lang=target_lang)
+    tts_res = coordinator.tts.synthesize(text=trans_res.translated_text, language_code=target_lang)
+    audio_tuple = (tts_res.sample_rate, tts_res.audio) if tts_res is not None else None
+    return trans_res.translated_text, audio_tuple
 
+
+# Real-time Speech-to-Speech translation (Transcribes voice, translates, and speaks back in neural voice)
+def voice_translate_audio(audio_data, source_lang: str, target_lang: str):
+    if audio_data is None:
+        return "", "", None
+    sr, raw_audio = audio_data
+    if raw_audio.ndim > 1:
+        raw_audio = raw_audio.mean(axis=1)
+    if raw_audio.dtype == np.int16:
+        raw_audio = raw_audio.astype(np.float32) / 32768.0
+    elif raw_audio.dtype != np.float32:
+        raw_audio = raw_audio.astype(np.float32)
+    if sr != 16000 and len(raw_audio) > 0:
+        import scipy.signal
+        num_target = int(len(raw_audio) * 16000 / sr)
+        raw_audio = scipy.signal.resample(raw_audio, num_target).astype(np.float32)
+        sr = 16000
+    asr_lang = None if source_lang == "auto" else source_lang
+    asr_res = coordinator.asr.transcribe(audio_or_path=raw_audio, language=asr_lang)
+    rec_text = asr_res.text.strip()
+    if not rec_text:
+        return "(No speech detected)", "", None
+    trans_res = coordinator.translation.translate(text=rec_text, source_lang=asr_res.language, target_lang=target_lang)
+    tts_res = coordinator.tts.synthesize(text=trans_res.translated_text, language_code=target_lang)
+    audio_tuple = (tts_res.sample_rate, tts_res.audio) if tts_res is not None else None
+    return rec_text, trans_res.translated_text, audio_tuple
+
+
+# Language choices list
+LANG_CHOICES = ["te", "hi", "en", "ta", "kn", "ml", "mr", "bn", "gu", "pa", "ur", "es", "fr", "de", "ja", "zh", "ar"]
+LANG_CHOICES_WITH_AUTO = ["auto"] + LANG_CHOICES
 
 # Build Gradio UI
 with gr.Blocks(title="Multilingual Voice Call Translator") as demo:
@@ -71,34 +101,63 @@ with gr.Blocks(title="Multilingual Voice Call Translator") as demo:
         "- **Available Voices:** [Check /api/voices](/api/voices)\n"
     )
 
-    with gr.Row():
-        txt_input = gr.Textbox(
-            label="Spoken Text (Telugu, Hindi, English, Tamil, etc.)",
-            value="ఏం చేయట్లేదు బ్రో",
-            lines=2
-        )
-        src_dropdown = gr.Dropdown(
-            choices=["te", "hi", "en", "ta", "kn", "auto"],
-            value="te",
-            label="Source Language"
-        )
-        tgt_dropdown = gr.Dropdown(
-            choices=["en", "te", "hi", "ta", "kn"],
-            value="en",
-            label="Target Language"
-        )
+    with gr.Tabs():
+        with gr.Tab("Type Spoken Text (Text-to-Speech)"):
+            with gr.Row():
+                txt_input = gr.Textbox(
+                    label="Spoken Text (Telugu, Hindi, English, Tamil, etc.)",
+                    value="ఏం చేయట్లేదు బ్రో",
+                    lines=2
+                )
+            with gr.Row():
+                src_dropdown = gr.Dropdown(
+                    choices=LANG_CHOICES_WITH_AUTO,
+                    value="te",
+                    label="Source Language"
+                )
+                tgt_dropdown = gr.Dropdown(
+                    choices=LANG_CHOICES,
+                    value="en",
+                    label="Target Language"
+                )
+            btn_translate = gr.Button("Translate & Speak", variant="primary")
+            with gr.Row():
+                txt_output = gr.Textbox(label="Translated Speech Subtitle", lines=2)
+            with gr.Row():
+                txt_audio_out = gr.Audio(label="Translated Speech (Listen)", autoplay=True)
 
-    btn_translate = gr.Button("Translate Now", variant="primary")
-    txt_output = gr.Textbox(label="Translated Speech Subtitle", lines=2)
+            btn_translate.click(
+                fn=voice_translate_text,
+                inputs=[txt_input, src_dropdown, tgt_dropdown],
+                outputs=[txt_output, txt_audio_out]
+            )
 
-    # Bind button directly to @spaces.GPU function so ZeroGPU startup check passes!
-    btn_translate.click(
-        fn=translate_message,
-        inputs=[txt_input, src_dropdown, tgt_dropdown],
-        outputs=txt_output
-    )
+        with gr.Tab("Microphone / Audio Call (Speech-to-Speech)"):
+            with gr.Row():
+                mic_input = gr.Audio(sources=["microphone", "upload"], type="numpy", label="Record or Upload Voice")
+            with gr.Row():
+                mic_src_dropdown = gr.Dropdown(
+                    choices=LANG_CHOICES_WITH_AUTO,
+                    value="auto",
+                    label="Spoken Language (auto-detect available)"
+                )
+                mic_tgt_dropdown = gr.Dropdown(
+                    choices=LANG_CHOICES,
+                    value="en",
+                    label="Target Translation Language"
+                )
+            btn_mic_translate = gr.Button("Translate Speech & Speak", variant="primary")
+            with gr.Row():
+                mic_transcribed = gr.Textbox(label="Transcribed Spoken Text (Native Script)", lines=2)
+                mic_translated = gr.Textbox(label="Translated Speech Subtitle", lines=2)
+            with gr.Row():
+                mic_audio_out = gr.Audio(label="Translated Neural Speech (Listen)", autoplay=True)
+
+            btn_mic_translate.click(
+                fn=voice_translate_audio,
+                inputs=[mic_input, mic_src_dropdown, mic_tgt_dropdown],
+                outputs=[mic_transcribed, mic_translated, mic_audio_out]
+            )
 
 if __name__ == "__main__":
     demo.launch(ssr_mode=False)
-
-
