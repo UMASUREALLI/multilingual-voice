@@ -86,6 +86,6 @@ with gr.Blocks(title="Multilingual Voice Call Translator") as demo:
     )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(ssr_mode=False)
 
 
