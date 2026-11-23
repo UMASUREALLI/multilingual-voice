@@ -40,12 +40,12 @@ def translate_message(text: str, source_lang: str, target_lang: str) -> str:
 
 # Build Gradio UI with bound ZeroGPU handler
 with gr.Blocks(title="Multilingual Voice Call Translator") as demo:
-    gr.Markdown("# 📞 Multilingual Voice AI Call Translator Backend")
+    gr.Markdown("# Multilingual Voice AI Call Translator Backend")
     gr.Markdown(
-        "✅ **The Real-Time Voice Translation API is Live and Operational on Free ZeroGPU!**\n\n"
-        "- 📖 **Interactive API Documentation:** [Open Swagger UI (/docs)](/docs)\n"
-        "- 💓 **Server Health Status:** [Check /health](/health)\n"
-        "- 🌐 **Available Voices:** [Check /api/voices](/api/voices)\n"
+        "**The Real-Time Voice Translation API is Live and Operational.**\n\n"
+        "- **Interactive API Documentation:** [Open Swagger UI (/docs)](/docs)\n"
+        "- **Server Health Status:** [Check /health](/health)\n"
+        "- **Available Voices:** [Check /api/voices](/api/voices)\n"
     )
 
     with gr.Row():
@@ -65,7 +65,7 @@ with gr.Blocks(title="Multilingual Voice Call Translator") as demo:
             label="Target Language"
         )
 
-    btn_translate = gr.Button("⚡ Translate Now", variant="primary")
+    btn_translate = gr.Button("Translate Now", variant="primary")
     txt_output = gr.Textbox(label="Translated Speech Subtitle", lines=2)
 
     # Bind button directly to @spaces.GPU function so ZeroGPU startup check passes!
