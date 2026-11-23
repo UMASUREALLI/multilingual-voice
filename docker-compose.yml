@@ -1,0 +1,25 @@
+version: "3.8"
+
+services:
+  voice-ai-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: multilingual_voice_ai
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY:-}
+    volumes:
+      # Cache downloaded Hugging Face model weights across container restarts
+      - model_cache:/root/.cache
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  model_cache:
