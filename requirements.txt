@@ -26,8 +26,12 @@ SpeechRecognition>=3.10.0
 speechbrain>=1.0.0
 HyperPyYAML>=1.2.0
 
-# Neural Text-to-Speech (Edge-TTS)
+# Neural Text-to-Speech (Edge-TTS & ElevenLabs)
 edge-tts>=7.0.0
+elevenlabs>=2.0.0
+
+# Hugging Face Spaces Integration
+gradio>=4.0.0
 
 # Quality Assurance & Testing
 pytest>=8.0.0
