@@ -1,7 +1,7 @@
 """
 Hugging Face Spaces Entry Point (Gradio SDK + FastAPI Backend).
-Mounts the Multilingual Voice AI FastAPI endpoints seamlessly so the Flutter mobile team
-can call all REST and WebSocket endpoints on the free Hugging Face tier (16 GB RAM).
+Directly attaches FastAPI routes into Gradio's internal FastAPI app
+so both the browser UI and Flutter mobile REST API endpoints run on port 7860 cleanly.
 """
 
 import os
@@ -16,7 +16,7 @@ if BACKEND_DIR not in sys.path:
 from main import app as fastapi_app
 import gradio as gr
 
-# Create a clean status dashboard for visitors in the browser
+# Build clean status dashboard
 with gr.Blocks(title="Multilingual Voice Call Translator") as demo:
     gr.Markdown("# 📞 Multilingual Voice AI Call Translator Backend")
     gr.Markdown(
@@ -27,13 +27,9 @@ with gr.Blocks(title="Multilingual Voice Call Translator") as demo:
         "- 🌐 **Available Voices:** [Check /api/voices](/api/voices)\n"
     )
 
-# Mount Gradio onto FastAPI so all /api/call/... endpoints and WebSockets remain active
-app = gr.mount_gradio_app(fastapi_app, demo, path="/gradio")
-
-# Also expose demo as a top-level symbol for Hugging Face Spaces Gradio runner
-demo.app = app
+# Attach all FastAPI endpoints directly into Gradio's underlying ASGI app
+for route in fastapi_app.routes:
+    demo.app.routes.append(route)
 
 if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 7860))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    demo.launch()
