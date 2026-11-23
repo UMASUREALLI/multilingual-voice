@@ -1,3 +1,13 @@
+---
+title: Multilingual Voice AI Call Translator
+emoji: 📞
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Real-Time Bidirectional Multilingual Voice Call Translator
 
 > **A full-duplex AI voice translator with consent-based prosody matching, acoustic echo suppression, and zero audio-file persistence.**
