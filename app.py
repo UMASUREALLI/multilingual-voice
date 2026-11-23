@@ -73,6 +73,13 @@ def voice_translate_audio(audio_data, source_lang: str, target_lang: str):
         raw_audio = raw_audio.astype(np.float32) / max_val
     elif raw_audio.dtype != np.float32:
         raw_audio = raw_audio.astype(np.float32)
+
+    # Clean DC bias & normalize input gain for quiet browser microphones
+    raw_audio = raw_audio - np.mean(raw_audio)
+    peak = float(np.max(np.abs(raw_audio))) if len(raw_audio) > 0 else 0.0
+    if 0.001 < peak < 0.70:
+        raw_audio = (raw_audio / peak * 0.85).astype(np.float32)
+
     if sr != 16000 and len(raw_audio) > 0:
         import scipy.signal
         num_target = int(len(raw_audio) * 16000 / sr)

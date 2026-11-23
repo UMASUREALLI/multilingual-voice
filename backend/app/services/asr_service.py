@@ -275,6 +275,31 @@ class StreamingAsrService:
                 resolved_lang = lid_dec.language_code
                 lang_prob = float(lid_dec.confidence)
 
+            # Ensure resolved_lang is in SUPPORTED_LANGUAGES
+            if resolved_lang not in SUPPORTED_LANGUAGES:
+                try:
+                    _, _, all_probs = self.model.detect_language(audio)
+                    sup_probs = [(l, p) for l, p in all_probs if l in SUPPORTED_LANGUAGES]
+                    if sup_probs:
+                        sup_probs.sort(key=lambda x: x[1], reverse=True)
+                        resolved_lang = sup_probs[0][0]
+                        lang_prob = float(sup_probs[0][1])
+                    else:
+                        resolved_lang = "te"
+                except Exception:
+                    resolved_lang = "te"
+
+            # Disambiguate Indian English vs Hindi (VoxLingua often mistakes Indian English prosody for Hindi)
+            if resolved_lang == "hi" and language is None:
+                try:
+                    _, _, all_probs = self.model.detect_language(audio)
+                    prob_dict = dict(all_probs)
+                    if prob_dict.get("en", 0.0) >= 0.25:
+                        resolved_lang = "en"
+                        lang_prob = float(prob_dict["en"])
+                except Exception:
+                    pass
+
         # 3. Primary Path: High-Accuracy Native-Script Neural STT (Telugu, Hindi, Tamil, Kannada, Malayalam, English, Global)
         if prefer_neural_stt and not word_timestamps:
             # Peak-normalize copy for clear recognition on quiet microphones
@@ -322,16 +347,21 @@ class StreamingAsrService:
 
         # 4. Offline Fallback / Word-Timestamps Path: Local Faster-Whisper (INT8 CPU)
         # Note: repetition_penalty=1.0 and no_repeat_ngram_size=0 prevent UTF-8 3-byte Indic script corruption.
-        prompt = initial_prompt
-        # For short speech clips (< 4.0s), disable vad_filter so Silero VAD does not drop quick speech bursts
-        use_vad = (duration_sec >= 4.0)
-        whisper_lang = resolved_lang if (language is not None or lang_prob >= 0.65) else None
+        lang_info = SUPPORTED_LANGUAGES.get(
+            resolved_lang,
+            LanguageInfo(resolved_lang, resolved_lang.title(), resolved_lang)
+        )
+        prompt = initial_prompt or f"Conversational speech in {lang_info.name}."
+        # For short speech clips (< 5.0s), disable vad_filter so Silero VAD does not drop quick speech bursts
+        use_vad = (duration_sec >= 5.0)
+        whisper_lang = resolved_lang if (resolved_lang in SUPPORTED_LANGUAGES) else (language or "te")
+        effective_beam_size = max(beam_size, 3)
         try:
             segments, info = self.model.transcribe(
                 audio,
                 language=whisper_lang,
                 initial_prompt=prompt,
-                beam_size=beam_size,
+                beam_size=effective_beam_size,
                 best_of=1,
                 word_timestamps=word_timestamps,
                 repetition_penalty=1.0,

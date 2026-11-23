@@ -164,6 +164,12 @@ class LanguageDetectionEngine:
         best_code = alias_map.get(raw_top, raw_top)
         best_conf = float(torch.exp(score[0]).item())
 
+        # If raw_top is not in our supported languages, pick the top supported candidate
+        supported_candidates = [c for c in candidates if c[0] in SUPPORTED_LANGUAGES]
+        if best_code not in SUPPORTED_LANGUAGES and supported_candidates:
+            best_code = supported_candidates[0][0]
+            best_conf = supported_candidates[0][2]
+
         return self._build_decision(
             lang_code=best_code,
             confidence=best_conf,
@@ -218,13 +224,19 @@ class LanguageDetectionEngine:
             )
             elapsed = (time.perf_counter() - t0) * 1000.0
 
+            supported_probs = [(c_code, float(c_prob)) for c_code, c_prob in all_probs if c_code in SUPPORTED_LANGUAGES]
             candidates: List[Tuple[str, str, float]] = []
-            for c_code, c_prob in all_probs[:8]:
+            for c_code, c_prob in (supported_probs[:8] if supported_probs else all_probs[:8]):
                 info = SUPPORTED_LANGUAGES.get(c_code, LanguageInfo(c_code, c_code.title(), c_code))
                 candidates.append((c_code, info.name, float(c_prob)))
 
-            best_code = str(lang_code)
-            best_conf = float(confidence)
+            if supported_probs:
+                supported_probs.sort(key=lambda x: x[1], reverse=True)
+                best_code = supported_probs[0][0]
+                best_conf = supported_probs[0][1]
+            else:
+                best_code = str(lang_code)
+                best_conf = float(confidence)
 
             return self._build_decision(
                 lang_code=best_code,
