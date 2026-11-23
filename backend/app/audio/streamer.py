@@ -10,7 +10,10 @@ import queue
 import threading
 from typing import Optional, Callable, List, Dict, Any
 import numpy as np
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except (ImportError, OSError):
+    sd = None
 
 from app.audio.vad import StreamingSileroVAD, SpeechEventType, SpeechSegment, calculate_rms_dbfs
 from app.audio.buffer import AudioRingBuffer
@@ -78,6 +81,8 @@ class LiveAudioStreamer:
     @staticmethod
     def list_input_devices() -> List[Dict[str, Any]]:
         """List all valid audio input devices detected on the host system."""
+        if sd is None:
+            return []
         devices = []
         try:
             device_list = sd.query_devices()
@@ -103,6 +108,8 @@ class LiveAudioStreamer:
         instead of defaulting to the distant laptop mic.
         Filters for standard MME / DirectSound host APIs (ignores raw WDM-KS).
         """
+        if sd is None:
+            return None
         try:
             device_list = sd.query_devices()
             def_out_idx = sd.default.device[1]
@@ -217,6 +224,8 @@ class LiveAudioStreamer:
 
     def start(self) -> None:
         """Start microphone audio capture stream and background processing thread."""
+        if sd is None:
+            raise RuntimeError("sounddevice / PortAudio is not available on this server.")
         if self._running:
             return
 

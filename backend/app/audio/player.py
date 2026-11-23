@@ -14,7 +14,10 @@ import logging
 import time
 from typing import TYPE_CHECKING, Optional, Callable, List
 import numpy as np
-import sounddevice as sd
+try:
+    import sounddevice as sd
+except (ImportError, OSError):
+    sd = None
 
 if TYPE_CHECKING:
     from app.audio.streamer import LiveAudioStreamer
@@ -75,6 +78,8 @@ class AudioPlaybackEngine:
     @staticmethod
     def get_laptop_speakers() -> Optional[int]:
         """Find the laptop built-in physical speakers (standard MME or DirectSound)."""
+        if sd is None:
+            return None
         try:
             device_list = sd.query_devices()
             for idx, dev in enumerate(device_list):
@@ -161,6 +166,9 @@ class AudioPlaybackEngine:
 
     def _play_synchronous(self, audio: np.ndarray, sample_rate: int) -> None:
         """Synchronous audio playback with echo loop prevention notifications."""
+        if sd is None:
+            logger.warning("sounddevice is not available on this server. Playback skipped.")
+            return
         self._notify_playback_start()
         try:
             sd.play(audio, samplerate=sample_rate, device=self.device_index, blocking=True)
