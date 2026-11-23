@@ -1,6 +1,8 @@
 """
 Hugging Face Spaces Entry Point (ZeroGPU + Gradio SDK + FastAPI Backend).
-Full-Duplex Voice Call Translation: Speech-to-Speech & Text-to-Speech Neural Audio Synthesis.
+Full-Duplex Voice Call Translation:
+- Speech-to-Speech (Acoustic LID, ASR, Translation, Acoustic Gender Detection & Neural Voice Synthesis)
+- Text-to-Speech (Contextual Translation & Multi-Gender Neural Speech Playback)
 """
 
 import os
@@ -14,6 +16,7 @@ if BACKEND_DIR not in sys.path:
 
 import numpy as np
 from main import app as fastapi_app, coordinator
+from app.services.voice_cloner import VoiceCloningService
 import gradio as gr
 
 # Intercept Gradio's internal App creation immediately so all FastAPI endpoints take priority
@@ -46,20 +49,22 @@ def _zerogpu_anchor():
     return ""
 
 
-# Real-time Text-to-Speech translation (Translates text and synthesizes neural voice)
-def voice_translate_text(text: str, source_lang: str, target_lang: str):
+# Real-time Text-to-Speech translation with Gender persona selection
+def voice_translate_text(text: str, source_lang: str, target_lang: str, gender: str = "Female"):
     if not text or not text.strip():
-        return "", None
+        return "", "", None
     trans_res = coordinator.translation.translate(text=text, source_lang=source_lang, target_lang=target_lang)
-    tts_res = coordinator.tts.synthesize(text=trans_res.translated_text, language_code=target_lang)
+    selected_gender = "female" if gender.lower() == "female" else "male"
+    tts_res = coordinator.tts.synthesize(text=trans_res.translated_text, language_code=target_lang, gender=selected_gender)
+    voice_info = f"{tts_res.voice_id} ({selected_gender.capitalize()})" if tts_res else ""
     audio_tuple = (tts_res.sample_rate, tts_res.audio) if tts_res is not None else None
-    return trans_res.translated_text, audio_tuple
+    return trans_res.translated_text, voice_info, audio_tuple
 
 
-# Real-time Speech-to-Speech translation (Transcribes voice, translates, and speaks back in neural voice)
+# Real-time Speech-to-Speech translation with Automatic Gender & Pitch Detection
 def voice_translate_audio(audio_data, source_lang: str, target_lang: str):
     if audio_data is None:
-        return "", "", None
+        return "", "", "", "", None
     sr, raw_audio = audio_data
     if raw_audio.ndim > 1:
         raw_audio = raw_audio.mean(axis=1)
@@ -72,18 +77,32 @@ def voice_translate_audio(audio_data, source_lang: str, target_lang: str):
         num_target = int(len(raw_audio) * 16000 / sr)
         raw_audio = scipy.signal.resample(raw_audio, num_target).astype(np.float32)
         sr = 16000
+
+    # 1. Acoustic Gender & Fundamental Pitch (F0) Detection
+    feat = VoiceCloningService.extract_acoustic_features(raw_audio, sr)
+    detected_gender = feat.estimated_gender
+    detected_pitch = feat.f0_median_hz
+    gender_info = f"{detected_gender.capitalize()} Voice (Pitch: {detected_pitch:.1f} Hz)"
+
+    # 2. Native Script Whisper ASR & Acoustic Language Identification
     asr_lang = None if source_lang == "auto" else source_lang
     asr_res = coordinator.asr.transcribe(audio_or_path=raw_audio, language=asr_lang)
     rec_text = asr_res.text.strip()
     if not rec_text:
-        return "(No speech detected)", "", None
+        return "(No speech detected)", "", gender_info, "", None
+
+    # 3. Contextual Translation
     trans_res = coordinator.translation.translate(text=rec_text, source_lang=asr_res.language, target_lang=target_lang)
-    tts_res = coordinator.tts.synthesize(text=trans_res.translated_text, language_code=target_lang)
+
+    # 4. Neural Speech Synthesis matching the speaker's detected gender
+    tts_res = coordinator.tts.synthesize(text=trans_res.translated_text, language_code=target_lang, gender=detected_gender)
+    voice_info = f"{tts_res.voice_id} ({detected_gender.capitalize()})" if tts_res else ""
     audio_tuple = (tts_res.sample_rate, tts_res.audio) if tts_res is not None else None
-    return rec_text, trans_res.translated_text, audio_tuple
+
+    return rec_text, trans_res.translated_text, gender_info, voice_info, audio_tuple
 
 
-# Language choices list
+# Supported Language Choices
 LANG_CHOICES = ["te", "hi", "en", "ta", "kn", "ml", "mr", "bn", "gu", "pa", "ur", "es", "fr", "de", "ja", "zh", "ar"]
 LANG_CHOICES_WITH_AUTO = ["auto"] + LANG_CHOICES
 
@@ -102,7 +121,42 @@ with gr.Blocks(title="Multilingual Voice Call Translator") as demo:
     )
 
     with gr.Tabs():
+        with gr.Tab("Microphone / Audio Call (Speech-to-Speech)"):
+            gr.Markdown(
+                "### Speak or Upload Spoken Audio\n"
+                "*Automatically identifies spoken language, transcribes speech, detects male/female vocal pitch, and synthesizes matching neural voice.*"
+            )
+            with gr.Row():
+                mic_input = gr.Audio(sources=["microphone", "upload"], type="numpy", label="Record or Upload Voice Audio")
+            with gr.Row():
+                mic_src_dropdown = gr.Dropdown(
+                    choices=LANG_CHOICES_WITH_AUTO,
+                    value="auto",
+                    label="Spoken Language (auto-detect available)"
+                )
+                mic_tgt_dropdown = gr.Dropdown(
+                    choices=LANG_CHOICES,
+                    value="en",
+                    label="Target Translation Language"
+                )
+            btn_mic_translate = gr.Button("Translate Speech & Speak", variant="primary")
+            with gr.Row():
+                mic_transcribed = gr.Textbox(label="Transcribed Spoken Text (Native Script)", lines=2)
+                mic_translated = gr.Textbox(label="Translated Speech Subtitle", lines=2)
+            with gr.Row():
+                mic_gender_status = gr.Textbox(label="Acoustically Detected Gender & Pitch (F0)", lines=1)
+                mic_voice_status = gr.Textbox(label="Assigned Neural Voice Persona", lines=1)
+            with gr.Row():
+                mic_audio_out = gr.Audio(label="Translated Neural Speech (Listen)", autoplay=True)
+
+            btn_mic_translate.click(
+                fn=voice_translate_audio,
+                inputs=[mic_input, mic_src_dropdown, mic_tgt_dropdown],
+                outputs=[mic_transcribed, mic_translated, mic_gender_status, mic_voice_status, mic_audio_out]
+            )
+
         with gr.Tab("Type Spoken Text (Text-to-Speech)"):
+            gr.Markdown("### Type or Paste Spoken Dialogue\n*Translates text and synthesizes speech in selected regional female or male persona.*")
             with gr.Row():
                 txt_input = gr.Textbox(
                     label="Spoken Text (Telugu, Hindi, English, Tamil, etc.)",
@@ -120,43 +174,22 @@ with gr.Blocks(title="Multilingual Voice Call Translator") as demo:
                     value="en",
                     label="Target Language"
                 )
+                gender_dropdown = gr.Dropdown(
+                    choices=["Female", "Male"],
+                    value="Female",
+                    label="Voice Gender Persona"
+                )
             btn_translate = gr.Button("Translate & Speak", variant="primary")
             with gr.Row():
                 txt_output = gr.Textbox(label="Translated Speech Subtitle", lines=2)
+                txt_voice_status = gr.Textbox(label="Active Neural Voice Persona", lines=2)
             with gr.Row():
                 txt_audio_out = gr.Audio(label="Translated Speech (Listen)", autoplay=True)
 
             btn_translate.click(
                 fn=voice_translate_text,
-                inputs=[txt_input, src_dropdown, tgt_dropdown],
-                outputs=[txt_output, txt_audio_out]
-            )
-
-        with gr.Tab("Microphone / Audio Call (Speech-to-Speech)"):
-            with gr.Row():
-                mic_input = gr.Audio(sources=["microphone", "upload"], type="numpy", label="Record or Upload Voice")
-            with gr.Row():
-                mic_src_dropdown = gr.Dropdown(
-                    choices=LANG_CHOICES_WITH_AUTO,
-                    value="auto",
-                    label="Spoken Language (auto-detect available)"
-                )
-                mic_tgt_dropdown = gr.Dropdown(
-                    choices=LANG_CHOICES,
-                    value="en",
-                    label="Target Translation Language"
-                )
-            btn_mic_translate = gr.Button("Translate Speech & Speak", variant="primary")
-            with gr.Row():
-                mic_transcribed = gr.Textbox(label="Transcribed Spoken Text (Native Script)", lines=2)
-                mic_translated = gr.Textbox(label="Translated Speech Subtitle", lines=2)
-            with gr.Row():
-                mic_audio_out = gr.Audio(label="Translated Neural Speech (Listen)", autoplay=True)
-
-            btn_mic_translate.click(
-                fn=voice_translate_audio,
-                inputs=[mic_input, mic_src_dropdown, mic_tgt_dropdown],
-                outputs=[mic_transcribed, mic_translated, mic_audio_out]
+                inputs=[txt_input, src_dropdown, tgt_dropdown, gender_dropdown],
+                outputs=[txt_output, txt_voice_status, txt_audio_out]
             )
 
 if __name__ == "__main__":
