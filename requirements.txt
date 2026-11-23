@@ -32,6 +32,7 @@ elevenlabs>=2.0.0
 
 # Hugging Face Spaces Integration
 gradio>=4.0.0
+spaces
 
 # Quality Assurance & Testing
 pytest>=8.0.0
