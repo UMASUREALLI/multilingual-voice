@@ -21,8 +21,7 @@ orig_create_app = gr.routes.App.create_app
 
 def custom_create_app(*args, **kwargs):
     app = orig_create_app(*args, **kwargs)
-    for route in reversed(fastapi_app.routes):
-        app.routes.insert(0, route)
+    app.include_router(fastapi_app.router)
     return app
 
 gr.routes.App.create_app = staticmethod(custom_create_app)
