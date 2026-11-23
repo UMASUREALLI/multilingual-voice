@@ -75,13 +75,18 @@ with gr.Blocks(title="Multilingual Voice Call Translator") as demo:
         outputs=txt_output
     )
 
-# When launched, attach all FastAPI endpoints directly into the active ASGI router
-if __name__ == "__main__":
-    app, _, _ = demo.launch(prevent_thread_lock=True)
+# Intercept Gradio's internal App creation so all FastAPI endpoints take priority
+orig_create_app = gr.routes.App.create_app
+
+def custom_create_app(*args, **kwargs):
+    app = orig_create_app(*args, **kwargs)
     for route in reversed(fastapi_app.routes):
         app.routes.insert(0, route)
-    demo.block_thread()
-else:
-    for route in reversed(fastapi_app.routes):
-        demo.app.routes.insert(0, route)
+    return app
+
+gr.routes.App.create_app = staticmethod(custom_create_app)
+
+if __name__ == "__main__":
+    demo.launch()
+
 
