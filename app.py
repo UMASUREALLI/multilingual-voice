@@ -16,6 +16,17 @@ if BACKEND_DIR not in sys.path:
 from main import app as fastapi_app
 import gradio as gr
 
+# Intercept Gradio's internal App creation immediately so all FastAPI endpoints take priority
+orig_create_app = gr.routes.App.create_app
+
+def custom_create_app(*args, **kwargs):
+    app = orig_create_app(*args, **kwargs)
+    for route in reversed(fastapi_app.routes):
+        app.routes.insert(0, route)
+    return app
+
+gr.routes.App.create_app = staticmethod(custom_create_app)
+
 # Hugging Face ZeroGPU integration
 try:
     import spaces
@@ -74,17 +85,6 @@ with gr.Blocks(title="Multilingual Voice Call Translator") as demo:
         inputs=[txt_input, src_dropdown, tgt_dropdown],
         outputs=txt_output
     )
-
-# Intercept Gradio's internal App creation so all FastAPI endpoints take priority
-orig_create_app = gr.routes.App.create_app
-
-def custom_create_app(*args, **kwargs):
-    app = orig_create_app(*args, **kwargs)
-    for route in reversed(fastapi_app.routes):
-        app.routes.insert(0, route)
-    return app
-
-gr.routes.App.create_app = staticmethod(custom_create_app)
 
 if __name__ == "__main__":
     demo.launch()
