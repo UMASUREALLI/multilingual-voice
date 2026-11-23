@@ -133,7 +133,7 @@ class VoiceCloningService:
     def extract_acoustic_features(audio: np.ndarray, sample_rate: int = 16000) -> AcousticFeatures:
         """
         Extract fundamental frequency (F0), gender, tempo, and timbre in memory.
-        Uses normalized autocorrelation for robust, lightweight pitch extraction on CPU.
+        Uses unbiased normalized autocorrelation for robust, lightweight pitch extraction on CPU.
         """
         if len(audio) == 0:
             raise ValueError("Audio array is empty.")
@@ -141,67 +141,84 @@ class VoiceCloningService:
         duration_sec = len(audio) / sample_rate
         rms_dbfs = calculate_rms_dbfs(audio)
 
-        # Frame-by-frame F0 extraction using autocorrelation
-        frame_len = int(0.030 * sample_rate)   # 30ms frame
-        hop_len = int(0.015 * sample_rate)     # 15ms hop
-        min_lag = int(sample_rate / 400.0)      # 400 Hz ceiling
-        max_lag = int(sample_rate / 70.0)       # 70 Hz floor
-
-        f0_estimates: List[float] = []
-
-        for start in range(0, len(audio) - frame_len, hop_len):
-            frame = audio[start:start + frame_len]
-            # Windowing
-            windowed = frame * np.hanning(len(frame))
-
-            # Autocorrelation
-            corr = np.correlate(windowed, windowed, mode="full")
-            corr = corr[len(corr) // 2:]  # Positive lags only
-
-            if corr[0] <= 1e-7:
-                continue
-
-            # Normalized correlation
-            norm_corr = corr / corr[0]
-
-            # Search within vocal lag window
-            search_window = norm_corr[min_lag:max_lag]
-            if len(search_window) == 0:
-                continue
-
-            peak_idx = int(np.argmax(search_window)) + min_lag
-            peak_val = norm_corr[peak_idx]
-
-            # Harmonic threshold: voiced frame if autocorrelation peak > 0.35
-            if peak_val > 0.35:
-                f0 = sample_rate / float(peak_idx)
-                if 70.0 <= f0 <= 400.0:
-                    f0_estimates.append(f0)
-
-        if f0_estimates:
-            f0_median = float(np.median(f0_estimates))
-            f0_std = float(np.std(f0_estimates))
-        else:
-            # Fallback if audio was mostly unvoiced or whisper
-            f0_median = 150.0
-            f0_std = 20.0
-
-        # Gender heuristic based on human vocal tract anatomy
-        # Male typically 85-155 Hz, Female typically 165-260 Hz
-        estimated_gender = "female" if f0_median >= 160.0 else "male"
-
         # Spectral Centroid (Timbre brightness)
-        fft_mag = np.abs(np.fft.rfft(audio[:min(len(audio), 32768)]))
-        freqs = np.fft.rfftfreq(min(len(audio), 32768), 1.0 / sample_rate)
+        fft_len = min(len(audio), 32768)
+        fft_mag = np.abs(np.fft.rfft(audio[:fft_len]))
+        freqs = np.fft.rfftfreq(fft_len, 1.0 / sample_rate)
         sum_mag = np.sum(fft_mag)
         if sum_mag > 1e-7:
             centroid = float(np.sum(freqs * fft_mag) / sum_mag)
         else:
             centroid = 1800.0
 
-        # Speaking rate proxy: energy envelopes
-        # Count major syllable energy peaks
-        # Average English/Indian speaking rate: ~130 - 150 WPM
+        # Frame-by-frame F0 extraction using unbiased autocorrelation
+        # 35ms frame (560 samples @ 16kHz)
+        frame_len = int(0.035 * sample_rate)
+        hop_len = int(0.015 * sample_rate)
+        min_lag = int(sample_rate / 350.0)      # 350 Hz ceiling (~45 samples)
+        max_lag = int(sample_rate / 75.0)       # 75 Hz floor (~213 samples)
+
+        # Energy threshold to filter out silence and unvoiced fricatives
+        frame_energies = [np.mean(audio[s:s + frame_len] ** 2) for s in range(0, len(audio) - frame_len, hop_len)]
+        max_energy = max(frame_energies) if frame_energies else 1.0
+        energy_thresh = max_energy * 0.08
+
+        f0_estimates: List[float] = []
+
+        for start in range(0, len(audio) - frame_len, hop_len):
+            frame = audio[start:start + frame_len]
+            if np.mean(frame ** 2) < energy_thresh:
+                continue
+
+            frame_centered = frame - np.mean(frame)
+            if np.sum(frame_centered ** 2) <= 1e-7:
+                continue
+
+            # Full autocorrelation with unbiased normalization (divide by overlap length)
+            full_corr = np.correlate(frame_centered, frame_centered, mode="full")
+            corr = full_corr[len(frame_centered) - 1:]
+            overlap = np.arange(len(frame_centered), 0, -1)
+            unbiased_corr = corr / np.maximum(overlap, 1)
+
+            if unbiased_corr[0] <= 1e-7:
+                continue
+
+            norm_corr = unbiased_corr / unbiased_corr[0]
+
+            # Search within vocal lag window [min_lag, max_lag]
+            search_window = norm_corr[min_lag:max_lag]
+            if len(search_window) == 0:
+                continue
+
+            best_idx = int(np.argmax(search_window))
+            peak_val = search_window[best_idx]
+
+            # Voiced frame threshold
+            if peak_val > 0.35:
+                peak_lag = best_idx + min_lag
+                f0 = sample_rate / float(peak_lag)
+                if 70.0 <= f0 <= 350.0:
+                    f0_estimates.append(f0)
+
+        if f0_estimates:
+            f0_median = float(np.median(f0_estimates))
+            f0_std = float(np.std(f0_estimates))
+        else:
+            # Fallback based on spectral centroid if unvoiced/whisper
+            f0_median = 130.0 if centroid < 1700.0 else 210.0
+            f0_std = 20.0
+
+        # Gender decision with hysteresis band:
+        # Male modal pitch typically 85-160 Hz; Female modal pitch typically 170-260 Hz
+        if f0_median < 165.0:
+            estimated_gender = "male"
+        elif f0_median > 185.0:
+            estimated_gender = "female"
+        else:
+            # Boundary zone (165-185 Hz): use spectral centroid
+            # Males have lower formants and lower spectral centroid (<1700 Hz)
+            estimated_gender = "male" if centroid < 1700.0 else "female"
+
         wpm_est = 140.0
 
         return AcousticFeatures(

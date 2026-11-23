@@ -68,8 +68,9 @@ def voice_translate_audio(audio_data, source_lang: str, target_lang: str):
     sr, raw_audio = audio_data
     if raw_audio.ndim > 1:
         raw_audio = raw_audio.mean(axis=1)
-    if raw_audio.dtype == np.int16:
-        raw_audio = raw_audio.astype(np.float32) / 32768.0
+    if np.issubdtype(raw_audio.dtype, np.integer):
+        max_val = float(np.iinfo(raw_audio.dtype).max)
+        raw_audio = raw_audio.astype(np.float32) / max_val
     elif raw_audio.dtype != np.float32:
         raw_audio = raw_audio.astype(np.float32)
     if sr != 16000 and len(raw_audio) > 0:

@@ -247,6 +247,11 @@ class StreamingAsrService:
                 rtf=0.0
             )
 
+        # Peak normalization on input audio to boost quiet microphone recordings
+        peak = float(np.max(np.abs(audio))) if len(audio) > 0 else 0.0
+        if 0.001 < peak < 0.70:
+            audio = (audio / peak * 0.85).astype(np.float32)
+
         # 1. Silence trimming
         if trim_audio and isinstance(audio, np.ndarray):
             speech_audio, start_sec, dur_sec = trim_silence(audio, sample_rate=16000)
@@ -312,32 +317,19 @@ class StreamingAsrService:
                     segments=[seg],
                     words=[]
                 )
-            elif status == "no_speech":
-                # Pure silence / unintelligible breath — return empty cleanly without Whisper hallucination
-                elapsed_sec = time.perf_counter() - t0
-                lang_info = SUPPORTED_LANGUAGES.get(
-                    resolved_lang,
-                    LanguageInfo(resolved_lang, resolved_lang.title(), resolved_lang)
-                )
-                return TranscriptionResult(
-                    text="",
-                    language=resolved_lang,
-                    language_name=lang_info.name,
-                    language_probability=lang_prob,
-                    duration_sec=duration_sec,
-                    latency_ms=elapsed_sec * 1000.0,
-                    rtf=elapsed_sec / max(0.1, duration_sec),
-                    segments=[],
-                    words=[]
-                )
+            else:
+                logger.info("Neural STT returned '%s' (no text); falling back seamlessly to Faster-Whisper.", status)
 
         # 4. Offline Fallback / Word-Timestamps Path: Local Faster-Whisper (INT8 CPU)
         # Note: repetition_penalty=1.0 and no_repeat_ngram_size=0 prevent UTF-8 3-byte Indic script corruption.
         prompt = initial_prompt
+        # For short speech clips (< 4.0s), disable vad_filter so Silero VAD does not drop quick speech bursts
+        use_vad = (duration_sec >= 4.0)
+        whisper_lang = resolved_lang if (language is not None or lang_prob >= 0.65) else None
         try:
             segments, info = self.model.transcribe(
                 audio,
-                language=resolved_lang,
+                language=whisper_lang,
                 initial_prompt=prompt,
                 beam_size=beam_size,
                 best_of=1,
@@ -346,7 +338,7 @@ class StreamingAsrService:
                 no_repeat_ngram_size=0,
                 condition_on_previous_text=False,
                 temperature=0.0,
-                vad_filter=True,
+                vad_filter=use_vad,
                 vad_parameters=dict(min_silence_duration_ms=250),
                 compression_ratio_threshold=2.4,
                 no_speech_threshold=0.6
