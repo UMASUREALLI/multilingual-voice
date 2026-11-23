@@ -43,6 +43,7 @@ def main():
     parser.add_argument("--echo", action="store_true", help="Mirror/Echo mode: speaks back exact spoken words in original language (skips translation)")
     parser.add_argument("--duration", type=float, default=None, help="Stop listening after N seconds (default: runs continuously until Ctrl+C)")
     parser.add_argument("--no-tts", action="store_true", help="Disable audio speech playback (text subtitles only)")
+    parser.add_argument("--clone", action="store_true", help="Enable experimental neural voice cloning (default: False, fast crisp neural TTS)")
     parser.add_argument("--text", action="store_true", help="Interactive text input mode instead of live microphone")
     parser.add_argument("--model-size", type=str, default="base", choices=["tiny", "base", "small"], help="Whisper fallback model size")
     args = parser.parse_args()
@@ -90,9 +91,12 @@ def main():
     translation_service = TranslationService()
     tts_service = StreamingTtsService()
     playback_engine = AudioPlaybackEngine()
-    openvoice_cloner = get_openvoice_cloner()
+    openvoice_cloner = get_openvoice_cloner() if args.clone else None
     cached_caller_se = None
-    print(f"  -> All AI engines ready. (Neural Voice Cloner: {'ACTIVE' if openvoice_cloner.is_ready else 'OFF'})")
+    if openvoice_cloner and openvoice_cloner.is_ready:
+        print("  -> Neural Voice Cloner: ACTIVE (OpenVoice v2)")
+    else:
+        print("  -> High-Speed Neural TTS Engine: ACTIVE (Edge-TTS Natural Persona, Pure Zero-Lag Mode)")
 
     # 3. Setup Hardware Microphone Streamer & Echo Loop Safety Switch
     print("[3/4] Linking Acoustic Echo Prevention Safety Switch...")
@@ -129,8 +133,8 @@ def main():
         if peak > 0.003:
             audio = (audio / peak * 0.90).astype(np.float32)
 
-        # Extract Neural Speaker Embedding for Zero-Shot Voice Cloning
-        if openvoice_cloner.is_ready and len(audio) >= sr * 1.0:
+        # Extract Neural Speaker Embedding for Zero-Shot Voice Cloning (if enabled)
+        if openvoice_cloner and openvoice_cloner.is_ready and len(audio) >= sr * 1.0:
             try:
                 new_se = openvoice_cloner.extract_speaker_embedding(audio, sr)
                 if new_se is not None:
@@ -264,7 +268,7 @@ def main():
             audio_out = tts_result.audio
             sr_out = tts_result.sample_rate
 
-            if cached_caller_se is not None and openvoice_cloner.is_ready:
+            if openvoice_cloner and openvoice_cloner.is_ready and cached_caller_se is not None:
                 sys.stdout.write("  🎨 [Phase 7] OpenVoice v2: Morphing tone color into caller's vocal tract...\n")
                 sys.stdout.flush()
                 t_ov_0 = time.perf_counter()
