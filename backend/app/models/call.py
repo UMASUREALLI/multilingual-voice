@@ -107,6 +107,20 @@ class CallSession:
                 "target_language": self.caller_b.target_language,
                 "voice_cloned": self.caller_b.voice_cloned,
             },
+            "participants": {
+                "caller_a": {
+                    "id": self.caller_a.participant_id,
+                    "name": self.caller_a.name,
+                    "language": self.caller_a.native_language,
+                    "gender": self.caller_a.gender
+                },
+                "caller_b": {
+                    "id": self.caller_b.participant_id,
+                    "name": self.caller_b.name,
+                    "language": self.caller_b.native_language,
+                    "gender": self.caller_b.gender
+                }
+            },
             "total_subtitles": len(self.subtitles),
             "created_at": self.created_at
         }

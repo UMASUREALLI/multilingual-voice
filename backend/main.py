@@ -59,26 +59,26 @@ class CreateCallRequest(BaseModel):
     caller_b_lang: str = Field(default="en", min_length=2, max_length=32)
     caller_a_name: str = Field(default="Caller A (Telugu)", min_length=1, max_length=80)
     caller_b_name: str = Field(default="Caller B (English)", min_length=1, max_length=80)
-    caller_a_gender: Literal["female", "male"] = "female"
-    caller_b_gender: Literal["female", "male"] = "male"
+    caller_a_gender: str = "female"
+    caller_b_gender: str = "male"
 
 
 class ConsentRequest(BaseModel):
-    speaker_id: Literal["caller_a", "caller_b"]
+    speaker_id: str = "caller_a"
     consent_text: str = Field(min_length=1, max_length=1000)
     audio_base64: Optional[str] = Field(default=None, max_length=25_000_000)
 
 
 class TurnRequest(BaseModel):
-    speaker_id: Literal["caller_a", "caller_b"]
+    speaker_id: str = "caller_a"
     text: str = Field(min_length=1, max_length=5000)
     language: Optional[str] = None
 
 
 class AudioTurnRequest(BaseModel):
-    speaker_id: Literal["caller_a", "caller_b"] = "caller_a"
+    speaker_id: str = "caller_a"
     audio_base64: str = Field(min_length=1, max_length=25_000_000)
-    client_duration_sec: Optional[float] = Field(default=None, gt=0.0, le=120.0)
+    client_duration_sec: Optional[float] = None
 
 
 # ----------------------------------------------------------------------
@@ -265,15 +265,20 @@ def process_turn(session_id: str, req: TurnRequest):
 @app.post("/api/call/{session_id}/audio_turn")
 def process_audio_turn(session_id: str, req: AudioTurnRequest):
     """
-    Process raw microphone audio sent from the browser.
-    Runs Acoustic LID -> Whisper ASR -> NMT Translation -> Neural TTS in cloned voice.
+    Process raw microphone audio sent from mobile (Flutter) or browser.
+    Runs Acoustic LID -> Whisper/Google ASR -> NMT Translation -> Neural TTS in cloned voice.
     Zero disk writes.
     """
     session = coordinator.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Call session not found")
-    if not session.get_participant(req.speaker_id):
-        raise HTTPException(status_code=404, detail="Speaker not found in session")
+
+    target_speaker_id = req.speaker_id
+    if not session.get_participant(target_speaker_id):
+        if "b" in target_speaker_id.lower() or "2" in target_speaker_id:
+            target_speaker_id = "caller_b"
+        else:
+            target_speaker_id = "caller_a"
 
     try:
         try:
@@ -283,10 +288,25 @@ def process_audio_turn(session_id: str, req: AudioTurnRequest):
         bio = io.BytesIO(raw_bytes)
         try:
             audio_data, sr = sf.read(bio, dtype="float32")
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail="Decoded audio is not a supported audio file") from exc
+        except Exception:
+            # Fallback for mobile AAC, MP3, M4A, OGG, or raw PCM
+            try:
+                bio.seek(0)
+                from pydub import AudioSegment
+                seg = AudioSegment.from_file(bio)
+                seg = seg.set_channels(1).set_frame_rate(16000)
+                samples = np.array(seg.get_array_of_samples(), dtype=np.float32)
+                max_int = float(2 ** (seg.sample_width * 8 - 1))
+                audio_data = samples / max_int
+                sr = 16000
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail="Decoded audio is not a supported audio file") from exc
+
         if audio_data.ndim > 1:
             audio_data = audio_data.mean(axis=1)
+
+        # Remove DC bias from mobile microphone
+        audio_data = audio_data - np.mean(audio_data)
 
         # Resample to 16000 Hz if needed
         if sr != 16000 and len(audio_data) > 0:
@@ -295,28 +315,11 @@ def process_audio_turn(session_id: str, req: AudioTurnRequest):
             audio_data = scipy.signal.resample(audio_data, num_target_samples).astype(np.float32)
             sr = 16000
 
-        # Physical Wall-Clock Timing Guard:
-        # Detect browser hardware 48kHz/44.1kHz capture tagged as 16kHz
-        if req.client_duration_sec and req.client_duration_sec > 0.2 and len(audio_data) > 0:
-            wav_dur = len(audio_data) / sr
-            ratio = wav_dur / req.client_duration_sec
-            if ratio > 1.3:
-                import scipy.signal
-                target_samples = int(req.client_duration_sec * 16000)
-                logger.info(
-                    f"Hardware sample rate mismatch detected: WAV claims {wav_dur:.2f}s, "
-                    f"client recorded for {req.client_duration_sec:.2f}s (ratio {ratio:.2f}). "
-                    f"Auto-resampling from {len(audio_data)} to {target_samples} samples."
-                )
-                audio_data = scipy.signal.resample(audio_data, target_samples).astype(np.float32)
-                sr = 16000
-
         peak = float(np.max(np.abs(audio_data))) if len(audio_data) > 0 else 0.0
         dur_sec = len(audio_data) / sr if sr > 0 else 0.0
         logger.info(f"Incoming audio turn: {len(audio_data)} samples @ {sr}Hz (Duration: {dur_sec:.2f}s, Peak: {peak:.4f})")
 
-        # Software AGC (Peak Normalization): Scale quiet microphone audio up to -1.0 dBFS (0.90)
-        # Allows mobile phones with quiet mic inputs to be accurately recognized by Whisper
+        # Software AGC (Peak Normalization): Scale quiet mobile microphone audio up to -1.0 dBFS (0.90)
         if peak > 0.001:
             audio_data = (audio_data / peak * 0.90).astype(np.float32)
             peak = 0.90
@@ -324,14 +327,9 @@ def process_audio_turn(session_id: str, req: AudioTurnRequest):
         if peak < 0.005 or dur_sec < 0.20:
             return {"status": "empty", "message": "Microphone audio was silent or too quiet. Please speak clearly into your mic."}
 
-        # Pre-trim silence to ensure fast Whisper response
-        trimmed, _, _ = trim_silence(audio_data, sample_rate=sr)
-        if len(trimmed) >= int(sr * 0.25):
-            audio_data = trimmed
-
         subtitle, tts_result = coordinator.process_audio_turn(
             session_id=session_id,
-            speaker_id=req.speaker_id,
+            speaker_id=target_speaker_id,
             audio_samples=audio_data,
             sample_rate=sr,
             synthesize_audio=True
@@ -478,15 +476,36 @@ async def call_websocket_endpoint(websocket: WebSocket, session_id: str, speaker
             elif msg_type == "audio_turn":
                 raw_bytes = base64.b64decode(data.get("audio_base64", ""))
                 bio = io.BytesIO(raw_bytes)
-                audio_data, sr = sf.read(bio, dtype="float32")
+                try:
+                    audio_data, sr = sf.read(bio, dtype="float32")
+                except Exception:
+                    try:
+                        bio.seek(0)
+                        from pydub import AudioSegment
+                        seg = AudioSegment.from_file(bio)
+                        seg = seg.set_channels(1).set_frame_rate(16000)
+                        samples = np.array(seg.get_array_of_samples(), dtype=np.float32)
+                        max_int = float(2 ** (seg.sample_width * 8 - 1))
+                        audio_data = samples / max_int
+                        sr = 16000
+                    except Exception as e:
+                        logger.error(f"Failed to decode audio in websocket: {e}")
+                        continue
+
                 if audio_data.ndim > 1:
                     audio_data = audio_data.mean(axis=1)
+
+                audio_data = audio_data - np.mean(audio_data)
 
                 if sr != 16000 and len(audio_data) > 0:
                     import scipy.signal
                     num_target_samples = int(len(audio_data) * 16000 / sr)
                     audio_data = scipy.signal.resample(audio_data, num_target_samples).astype(np.float32)
                     sr = 16000
+
+                peak = float(np.max(np.abs(audio_data))) if len(audio_data) > 0 else 0.0
+                if peak > 0.001:
+                    audio_data = (audio_data / peak * 0.90).astype(np.float32)
 
                 subtitle, tts_result = coordinator.process_audio_turn(
                     session_id=session_id,

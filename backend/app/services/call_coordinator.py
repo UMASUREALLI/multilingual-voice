@@ -102,8 +102,16 @@ class CallCoordinator:
 
         caller_a_lang = resolve_language(caller_a_lang)
         caller_b_lang = resolve_language(caller_b_lang)
-        if caller_a_gender not in {"male", "female"} or caller_b_gender not in {"male", "female"}:
-            raise ValueError("Participant gender must be 'male' or 'female'.")
+        def normalize_gender(val: str, default: str = "female") -> str:
+            v = str(val).strip().lower()
+            if "female" in v or "woman" in v or "girl" in v:
+                return "female"
+            if "male" in v or "man" in v or "boy" in v:
+                return "male"
+            return default
+
+        caller_a_gender = normalize_gender(caller_a_gender, default="female")
+        caller_b_gender = normalize_gender(caller_b_gender, default="male")
 
         participant_a = CallParticipant(
             participant_id="caller_a",
@@ -238,10 +246,8 @@ class CallCoordinator:
         asr_res = self.asr.transcribe(
             audio_or_path=audio_samples,
             language=target_asr_lang,
-            beam_size=1,
-            # Keep raw microphone audio on-device. Cloud translation/TTS, when
-            # explicitly enabled, only receive text derived from local Whisper.
-            prefer_neural_stt=False,
+            beam_size=3,
+            prefer_neural_stt=True,
         )
         asr_latency = (time.perf_counter() - t_asr_0) * 1000.0
         detected_lang = asr_res.language
@@ -254,7 +260,7 @@ class CallCoordinator:
 
         # Filter out turns with no alphanumeric characters
         clean_words = "".join(c for c in clean_original if c.isalnum())
-        if not clean_words or len(clean_words) < 2:
+        if not clean_words:
             logger.info(f"[{session_id}] Dropping acoustic breath/noise: '{clean_original}'")
             return None, None
 
@@ -297,32 +303,34 @@ class CallCoordinator:
         if synthesize_audio and clean_translated:
             t_tts_0 = time.perf_counter()
 
-            # Automatic Voice Profiling (extract F0 pitch, vocal gender & tempo from audio)
-            if not speaker.voice_cloned and len(audio_samples) > 0:
+            # Dynamic Voice Profiling: extract F0 pitch, vocal gender & tempo on every turn
+            detected_gender = speaker.gender
+            pitch_adj = speaker.pitch_mod if speaker.voice_cloned else "+0Hz"
+            rate_adj = speaker.rate_mod if speaker.voice_cloned else "+0%"
+
+            if len(audio_samples) > 0:
                 try:
                     feat = VoiceCloningService.extract_acoustic_features(audio_samples, sample_rate)
+                    detected_gender = feat.estimated_gender
                     p_mod, r_mod = VoiceCloningService.calculate_prosody_adjustments(feat)
-                    speaker.gender = feat.estimated_gender
+                    pitch_adj = p_mod
+                    rate_adj = r_mod
+                    speaker.gender = detected_gender
                     speaker.pitch_mod = p_mod
                     speaker.rate_mod = r_mod
                     speaker.voice_cloned = True
                     logger.info(
-                        f"[{session_id}] Auto voice profiling for {speaker.name}: "
-                        f"Gender={speaker.gender}, F0={feat.f0_median_hz:.1f}Hz, Pitch={p_mod}, Rate={r_mod}"
+                        f"[{session_id}] Acoustic turn profile for {speaker.name}: "
+                        f"Gender={detected_gender}, F0={feat.f0_median_hz:.1f}Hz, Pitch={p_mod}, Rate={r_mod}"
                     )
                 except Exception as e_prof:
-                    logger.warning(f"Auto voice profiling skipped: {e_prof}")
-
-            # Select gender and prosody based on speaker profile (if voice cloning enabled)
-            gender = speaker.gender
-            pitch_adj = speaker.pitch_mod if speaker.voice_cloned else "+0Hz"
-            rate_adj = speaker.rate_mod if speaker.voice_cloned else "+0%"
+                    logger.warning(f"Voice profiling skipped: {e_prof}")
 
             try:
                 tts_result = self.tts.synthesize(
                     text=clean_translated,
                     language_code=target_lang,
-                    gender=gender,
+                    gender=detected_gender,
                     pitch=pitch_adj,
                     rate=rate_adj
                 )
